@@ -1,0 +1,543 @@
+D11 appearance-policy for whip_core 1.1.0 / 1.1.1, used by d11_stores (whip-d11-clothing). LGPL-3.0, as whip_core.
+The character editor as a store: only the tabs the store unlocks, a cart on the right (a line per item, x to put it
+back, cash or bank), the server checks and charges before it keeps the look; the editor camera stops at walls.
+Not needed on whip_core 1.2.0 or newer: d11_stores uses its own store checkout (EditAppearance) there.
+Apply in resources/: patch -p1 < whip_core-appearance-policy-1.1.x.patch   (back up whip_core first; restart whip_core after)
+
+--- a/whip_core/client/appearance.lua
++++ b/whip_core/client/appearance.lua
+@@ -520,6 +520,21 @@
+             cx, cy = cx - rx * half * camShiftX, cy - ry * half * camShiftX
+         end
+     end
++
++    -- D11 PATCH appearance-policy: the camera stops at a wall. A scripted camera goes through walls, and in a
++    -- small room (a store) the orbit put it behind one: the ped "vanished" at some angles. A ray from the aim
++    -- point to the camera (map and objects, not the ped); on a hit the camera stands just short of it.
++    local probe = StartExpensiveSynchronousShapeTestLosProbe(lx, ly, lz, cx, cy, cz, 1 + 16, ped, 7)
++    local _, hit, at = GetShapeTestResult(probe)
++    if hit == 1 and at then
++        local dx, dy, dz = cx - lx, cy - ly, cz - lz
++        local full = sqrt(dx * dx + dy * dy + dz * dz)
++        if full > 1e-4 then
++            local hx, hy, hz = at.x - lx, at.y - ly, at.z - lz
++            local keep = math.max(0.6, sqrt(hx * hx + hy * hy + hz * hz) - 0.25) / full
++            if keep < 1.0 then cx, cy, cz = lx + dx * keep, ly + dy * keep, lz + dz * keep end
++        end
++    end
+     return cx, cy, cz, cpitch, cyaw
+ end
+ 
+@@ -975,7 +990,13 @@
+     if isCreatorOpen and creatorIsNew then startCreatorPose() end
+ end)
+ 
+----@param heading table|nil  { title, sub }: the editor's heading (EditLook's: whose look it is)
++-- D11 PATCH appearance-policy: an editor a store opened (exports OpenCharacterEditor with
++-- `policy`) saves through whip_core:appearance:saveWithPolicy, which keeps what the store does not allow
++-- and charges first. { allow = { category ids }, policy = true } while it is open; nil otherwise.
++local editorPolicy = nil
++
++---@param heading table|nil  { title, sub, allow }: the editor's heading (EditLook's: whose look it is); allow = the
++---                          categories shown (D11 PATCH appearance-policy), nil for all
+ local function OpenCreator(appearance, isNew, heading)
+     if isCreatorOpen then return end
+     isCreatorOpen = true
+@@ -1005,6 +1026,8 @@
+         isNew = isNew or false,
+         title = heading and heading.title or nil,
+         sub = heading and heading.sub or nil,
++        allow = heading and heading.allow or nil,         -- D11 PATCH appearance-policy
++        checkout = heading and heading.checkout or nil,   -- D11 PATCH: the store's cart (quoteAppearance), its texts
+         outfits = PlayerData and PlayerData.metadata and PlayerData.metadata.outfits or {},
+         outfitMax = math.max(1, math.min(100, math.floor(tonumber((Config.Creator or {}).maxOutfits) or 20))),   -- the server's bounds
+     })
+@@ -1078,6 +1101,7 @@
+     Focus.release('creator')
+ 
+     savedAppearance = nil
++    editorPolicy = nil   -- D11 PATCH appearance-policy
+ end
+ 
+ --- The creator on someone else's look (EditLook) is done: the saved look, or nil for Cancel. A headshot is taken
+@@ -1378,6 +1402,25 @@
+         return
+     end
+ 
++    -- D11 PATCH appearance-policy: a store's editor saves through the server's check and charge. Refused (no
++    -- money, the store closed): the editor stays open and says why.
++    if editorPolicy and editorPolicy.policy then
++        CreateThread(function()
++            local method = (data.method == 'cash' or data.method == 'bank') and data.method or ''
++            local saved, why = Callback('whip_core:appearance:saveWithPolicy', appearance, method)
++            if type(saved) ~= 'table' then
++                UI.Notify(type(why) == 'string' and why or 'Not saved', 'error')
++                cb({ ok = false, why = why })
++                return
++            end
++            ApplyAppearance(PlayerPedId(), saved)
++            if PlayerData.metadata then PlayerData.metadata.appearance = saved end
++            cb({ ok = true })
++            FinishCreator()
++        end)
++        return
++    end
++
+     local ped = PlayerPedId()
+     ApplyAppearance(ped, appearance)
+ 
+@@ -1394,6 +1437,18 @@
+     FinishCreator()
+ end)
+ 
++-- D11 PATCH appearance-policy: the store's cart for the look as it is now (server: onQuote).
++RegisterNUICallback('quoteAppearance', function(data, cb)
++    if not CreatorLive() or not (editorPolicy and editorPolicy.policy) or type(data.appearance) ~= 'table' then
++        cb({ ok = false }) return
++    end
++    CreateThread(function()
++        local quote, why = Callback('whip_core:appearance:quoteWithPolicy', data.appearance)
++        if type(quote) ~= 'table' then cb({ ok = false, why = why }) return end
++        cb({ ok = true, quote = quote })
++    end)
++end)
++
+ -- Cancel creator
+ RegisterNUICallback('cancelCreator', function(_, cb)
+     if not CreatorLive() then cb({ ok = false }) return end
+@@ -1511,9 +1566,12 @@
+ 
+ --- Open the character editor on this character (/charedit, and the server's OpenCharacterEditor export below).
+ --- Waits; call it from a thread.
++---@param opts table|nil  D11 PATCH appearance-policy: { allow = { category ids, 'tattoos' }, title, sub, policy = true,
++---                       texts = { the cart's words, see html/js/creator.js CART_TEXT } }. policy = true: Save goes
++---                       through the server's SetAppearancePolicy (a store's check and charge)
+ ---@return boolean ok
+ ---@return string|nil why
+-function OpenCharacterEditor()
++function OpenCharacterEditor(opts)
+     if not PlayerLoaded then return false, 'No character loaded.' end
+     if isCreatorOpen then return false, 'Creator is already open.' end
+     if PlayerIsDead then return false, 'Not while dead.' end
+@@ -1540,7 +1598,10 @@
+         Wait(300)
+     end
+ 
+-    OpenCreator(appearance, false)
++    opts = type(opts) == 'table' and opts or nil
++    local allow = opts and type(opts.allow) == 'table' and #opts.allow > 0 and opts.allow or nil
++    OpenCreator(appearance, false, opts and { title = opts.title, sub = opts.sub, allow = allow, checkout = opts.policy == true and (type(opts.texts) == 'table' and opts.texts or {}) or nil } or nil)
++    if opts and opts.policy then editorPolicy = { allow = allow, policy = true } end   -- after OpenCreator
+ 
+     -- Raised only if it was dropped, after the creator is up.
+     if needsSwap then
+@@ -1549,6 +1610,12 @@
+     return true
+ end
+ 
++-- D11 PATCH appearance-policy: another resource opens the editor (a store). Waits; call it from a thread.
++exports('OpenCharacterEditor', function(opts)
++    if Emotes then Emotes.stop() end
++    return OpenCharacterEditor(opts)
++end)
++
+ -- Developer mode only: nothing else checks the place, a price or a permission.
+ DevCommand('charedit', function()
+     local ok, why = OpenCharacterEditor()
+--- a/whip_core/html/js/creator.js
++++ b/whip_core/html/js/creator.js
+@@ -37,6 +37,12 @@
+ 
+ let activeCategory = null;      // entry from CATEGORIES
+ let activeCluster = 'face';     // which of the three rail cards is showing
++
++// D11 PATCH appearance-policy: a store opens the editor with only some categories
++// (openCreator's `allow`: category ids, 'tattoos' for every tattoo part). null = everything.
++let allowedCats = null;
++function catAllowed(cat) { return !allowedCats || allowedCats.has(cat.cluster === 'tattoos' ? 'tattoos' : cat.id); }
++function shownCategories() { return CATEGORIES.filter(catAllowed); }
+ let activeSubtab = 0;           // index into the category's sub-tabs
+ let activeFeatureGroup = null;  // entry from FEATURE_GROUPS (features category)
+ let currentCamPreset = null;
+@@ -855,13 +861,14 @@
+ // menu's words at the top of the panel, the categories a row of the Director's
+ // tabs under them.
+ function buildRail() {
+-    $('cr-groups').innerHTML = CLUSTER_ORDER.map(key => {
++    const shown = shownCategories();
++    $('cr-groups').innerHTML = CLUSTER_ORDER.filter(key => shown.some(c => c.cluster === key)).map(key => {
+         const on = key === activeCluster;
+         return `<button class="cr-group${on ? ' active' : ''}" data-action="cluster" data-cluster="${key}"
+             aria-pressed="${on}">${CLUSTER_LABELS[key] || key}</button>`;
+     }).join('');
+ 
+-    $('cr-rail').innerHTML = CATEGORIES.filter(cat => cat.cluster === activeCluster).map(cat =>
++    $('cr-rail').innerHTML = shown.filter(cat => cat.cluster === activeCluster).map(cat =>
+         `<button class="cr-tab" data-action="category" data-cat="${cat.id}">${cat.label}</button>`).join('');
+     markActiveRail();
+ }
+@@ -880,7 +887,7 @@
+  *  listing the old group while the grid showed the new one. */
+ function selectCluster(key) {
+     if (!key || key === activeCluster) return;
+-    const first = CATEGORIES.find(c => c.cluster === key);
++    const first = shownCategories().find(c => c.cluster === key);
+     if (first) selectCategory(first.id);
+ }
+ 
+@@ -899,7 +906,7 @@
+ 
+ function selectCategory(id) {
+     const cat = CATEGORIES.find(c => c.id === id);
+-    if (!cat) return;
++    if (!cat || !catAllowed(cat)) return;
+     activeCategory = cat;
+     activeSubtab = 0;
+     activeFeatureGroup = null;
+@@ -1836,9 +1843,153 @@
+ 
+ function saveAppearance() {
+     disarmCancel();
++    if (checkout) { cartBuy(); return; }   // D11 PATCH appearance-policy: a store saves through its cart
+     nuiCallback('saveAppearance', { appearance: collectAppearance() });
+ }
+ 
++// ========================================
++// D11 PATCH appearance-policy: THE STORE'S CART
++//
++// An editor a store opened (openCreator's `checkout`) keeps a cart on the right: every part changed since it
++// opened, priced by the server (quoteAppearance -> the store's onQuote), each with a button that puts that part
++// back as it was. The total, cash or bank, and the buy button save through the store (saveAppearance with
++// `method`). The look is checked every 600 ms and asked again only when it changed. `checkout` may carry the
++// store's own words for the cart (CART_TEXT keys); what it leaves out is in English.
++// ========================================
++
++const CART_TEXT = {
++    cart: 'Cart', free: 'Free', remove: 'Remove', empty: 'Nothing changed yet. Pick on the left.', total: 'Total',
++    cash: 'Cash', bank: 'Bank', buy: 'Buy', paying: 'Paying…', save: 'Save', short: 'Not enough money for this total.',
++    failed: 'The purchase did not go through', locale: 'en-US',
++};
++let cartText = CART_TEXT;
++let checkout = false;
++let cartBase = null;          // the look as the editor opened: what "remove" puts back
++let cartQuote = null;         // { title, total, lines = [{ label, price, key }], cash, bank }
++let cartMethod = null;        // 'cash' | 'bank'
++let cartSent = '';            // the look last asked about
++let cartTimer = null;
++let cartBusy = false;
++let cartWhy = '';
++
++const money = (n) => '$' + Math.round(Number(n) || 0).toLocaleString(cartText.locale || 'en-US');
++
++function cartEl() {
++    let el = document.getElementById('cr-cart');
++    if (!el) {
++        el = document.createElement('div');
++        el.id = 'cr-cart';
++        document.querySelector('#creator .cr-scale').appendChild(el);
++    }
++    return el;
++}
++
++function cartUsable(kind) {
++    const q = cartQuote || {};
++    const have = q[kind];
++    return typeof have === 'number' && have >= (q.total || 0);
++}
++
++function renderCart() {
++    const el = cartEl();
++    const t = cartText;
++    document.getElementById('creator').classList.toggle('has-cart', checkout);
++    const saveBtn = document.getElementById('cr-save');   // the cart's buy button is the only way out with a buy
++    if (saveBtn) saveBtn.style.display = checkout ? 'none' : '';
++    if (!checkout) { el.classList.remove('open'); el.innerHTML = ''; return; }
++    el.classList.add('open');
++    const q = cartQuote || { lines: [], total: 0 };
++    const rows = (q.lines || []).map(l => `<div class="cr-cart-row">
++        <span class="cr-cart-label">${escapeHtml(l.label || '')}</span>
++        <span class="cr-cart-price${l.price > 0 ? '' : ' free'}">${l.price > 0 ? money(l.price) : escapeHtml(t.free)}</span>
++        ${l.key ? `<button class="cr-cart-x" data-action="cartRemove" data-key="${escapeHtml(l.key)}" title="${escapeHtml(t.remove)}" aria-label="${escapeHtml(t.remove)}: ${escapeHtml(l.label || '')}">&times;</button>` : ''}
++    </div>`).join('');
++    const total = q.total || 0;
++    if (cartMethod && !cartUsable(cartMethod)) cartMethod = null;
++    if (!cartMethod) cartMethod = cartUsable('cash') ? 'cash' : (cartUsable('bank') ? 'bank' : null);
++    const method = (kind, label, have) => typeof have !== 'number' ? '' :
++        `<button class="cr-cart-pay${cartMethod === kind ? ' on' : ''}" data-action="cartMethod" data-value="${kind}"
++            ${cartUsable(kind) ? '' : 'disabled'} aria-pressed="${cartMethod === kind}">
++            <span>${escapeHtml(label)}</span><small>${money(have)}</small></button>`;
++    const pays = total > 0 ? `<div class="cr-cart-pays">${method('cash', t.cash, q.cash)}${method('bank', t.bank, q.bank)}</div>` : '';
++    const canBuy = !cartBusy && (total === 0 || !!cartMethod);
++    const buyLabel = cartBusy ? t.paying : (total > 0 ? `${t.buy} · ${money(total)}` : t.save);
++    el.innerHTML = `
++        <div class="cr-cart-head"><div class="cr-cart-title">${escapeHtml(t.cart)}</div>
++            <div class="cr-cart-sub">${escapeHtml(q.title || '')}</div></div>
++        <div class="cr-cart-list">${rows || `<div class="cr-cart-empty">${escapeHtml(t.empty)}</div>`}</div>
++        <div class="cr-cart-total"><span>${escapeHtml(t.total)}</span><b>${money(total)}</b></div>
++        ${pays}
++        ${cartWhy ? `<div class="cr-cart-why">${escapeHtml(cartWhy)}</div>` : ''}
++        ${total > 0 && !cartMethod ? `<div class="cr-cart-why">${escapeHtml(t.short)}</div>` : ''}
++        <button class="cr-cart-buy" data-action="cartBuy" ${canBuy ? '' : 'disabled'}>${escapeHtml(buyLabel)}</button>`;
++}
++
++function askCart(force) {
++    if (!checkout || !creatorOpen) return;
++    const look = collectAppearance();
++    const sig = JSON.stringify(look);
++    if (!force && sig === cartSent) return;
++    cartSent = sig;
++    nuiCallback('quoteAppearance', { appearance: look }).then(r => {
++        if (!checkout || sig !== cartSent) return;
++        if (r && r.ok && r.quote) { cartQuote = r.quote; cartWhy = ''; }
++        else if (r && r.why) cartWhy = r.why;
++        renderCart();
++    });
++}
++
++function startCart(on) {
++    checkout = !!on;
++    cartText = Object.assign({}, CART_TEXT, on && typeof on === 'object' ? on : {});
++    cartQuote = null; cartMethod = null; cartSent = ''; cartBusy = false; cartWhy = '';
++    if (cartTimer) { clearInterval(cartTimer); cartTimer = null; }
++    cartBase = checkout ? JSON.parse(JSON.stringify(appearance)) : null;
++    renderCart();
++    if (checkout) { askCart(true); cartTimer = setInterval(() => askCart(false), 600); }
++}
++
++/** A cart line taken out: that part goes back to how it was when the editor opened. */
++function cartRemove(key) {
++    if (!cartBase || !key) return;
++    const copy = (v) => JSON.parse(JSON.stringify(v));
++    const b = cartBase, a = appearance;
++    if (key.startsWith('c:')) {
++        const s = key.slice(2);
++        a.components[s] = copy(b.components[s]);
++        if (s === '11') ['3', '10'].forEach(k => { a.components[k] = copy(b.components[k]); });   // the top's fit
++    } else if (key.startsWith('p:')) {
++        a.props[key.slice(2)] = copy(b.props[key.slice(2)]);
++    } else if (key === 'hair') {
++        a.hair = copy(b.hair); a.hairFade = b.hairFade ? copy(b.hairFade) : null;
++    } else if (key.startsWith('ov:')) {
++        a.overlays[key.slice(3)] = copy(b.overlays[key.slice(3)]);
++    } else if (key.startsWith('tat:')) {
++        const k = key.slice(4);
++        a.tattoos = a.tattoos.filter(t => (t.collection + '/' + t.overlay) !== k);
++    } else if (key === 'face') {
++        a.headBlend = copy(b.headBlend); a.faceFeatures = copy(b.faceFeatures); a.eyeColor = b.eyeColor;
++        ['blemishes', 'ageing', 'complexion', 'sunDamage', 'moles'].forEach(k => { a.overlays[k] = copy(b.overlays[k]); });
++    } else return;
++    schedulePreview();
++    if (activeCategory) { renderGrid(); renderOptions(); }
++    askCart(true);
++}
++
++function cartBuy() {
++    if (cartBusy) return;
++    const total = (cartQuote && cartQuote.total) || 0;
++    if (total > 0 && !cartMethod) return;
++    cartBusy = true; cartWhy = '';
++    renderCart();
++    nuiCallback('saveAppearance', { appearance: collectAppearance(), method: total > 0 ? cartMethod : '' }).then(r => {
++        cartBusy = false;
++        if (!r || r.ok === false) { cartWhy = (r && r.why) || cartText.failed; askCart(true); }
++        renderCart();
++    });
++}
++
++
+ // Cancel is destructive (every tweak since open is lost), so it arms first:
+ // one press turns the button into "DISCARD?", a second within 3s confirms.
+ // Cheaper than a modal, still one honest mistake away from safe.
+@@ -1897,6 +2048,9 @@
+         ['outfitDelete', el => deleteOutfit(el)],
+         ['save',     () => saveAppearance()],
+         ['cancel',   () => attemptCancel()],
++        ['cartRemove', el => cartRemove(el.dataset.key)],                                    // D11 PATCH appearance-policy
++        ['cartMethod', el => { cartMethod = el.dataset.value; renderCart(); }],
++        ['cartBuy',    () => cartBuy()],
+     ]);
+ 
+     const INPUT = new Map([
+@@ -2037,8 +2191,9 @@
+  *  are where they were; on the cards it is over the new category's); what is under it is ringed again. */
+ function ctlCategory(step) {
+     if (!activeCategory) return;
+-    const i = CATEGORIES.indexOf(activeCategory);
+-    selectCategory(CATEGORIES[(i + step + CATEGORIES.length) % CATEGORIES.length].id);
++    const list = shownCategories();
++    const i = list.indexOf(activeCategory);
++    selectCategory(list[(i + step + list.length) % list.length].id);
+     requestAnimationFrame(() => cursor.refresh());
+ }
+ 
+@@ -2185,7 +2340,9 @@
+     if (subEl) subEl.textContent = typeof d.sub === 'string' && d.sub ? d.sub : 'Appearance';
+     creatorOpen = true;
+     currentCamPreset = 'torso';  // OpenCreator's Lua side starts on the torso preset
+-    activeCluster = 'face';
++    allowedCats = Array.isArray(d.allow) && d.allow.length ? new Set(d.allow) : null;   // D11 PATCH appearance-policy
++    const firstCat = shownCategories()[0] || CATEGORIES[0];
++    activeCluster = firstCat.cluster;
+     // The palettes arrive with maxVariations, so last session's sorted copy is
+     // stale the moment a new one does.
+     delete paletteCache.hair;
+@@ -2197,7 +2354,8 @@
+     loadNames();                 // the first open only: kept after that
+     buildRail();
+     document.getElementById('creator').classList.add('open');
+-    selectCategory('heritage');
++    selectCategory(firstCat.id);
++    startCart(d.checkout);   // D11 PATCH appearance-policy
+     // Laid out first (display: block a frame ago), so the stage's box is real.
+     requestAnimationFrame(() => requestAnimationFrame(reportStage));
+ });
+@@ -2244,6 +2402,7 @@
+     document.getElementById('creator').classList.remove('open');
+     $('cr-grid').innerHTML = '';
+     setOptions(null, null);
++    startCart(false);   // D11 PATCH appearance-policy
+ });
+ 
+ // Priority 0: while the creator is open every key belongs to it. Escape arms /
+--- a/whip_core/server/events_misc.lua
++++ b/whip_core/server/events_misc.lua
+@@ -824,10 +824,139 @@
+     return OpenCharacterEditorFor(who)
+ end)
+ 
++-- ============================================
++-- D11 PATCH appearance-policy (whip-d11-clothing, d11_stores)
++-- ============================================
++-- A store (d11_stores) opens the editor with only some categories and charges before it saves:
++--   server  exports.whip_core:SetAppearancePolicy(source, { allow = { 'tops', 'legs', 'hat', 'tattoos', ... },
++--               onQuote = function(source, old, new) return { ...the cart the editor shows... } end,
++--               onSave = function(source, old, new, { method }) return true | false, 'why' end })   -- nil clears it
++--   client  exports.whip_core:OpenCharacterEditor({ allow = {...}, title, sub, policy = true, texts = {...} })
++-- onQuote answers whip_core:appearance:quoteWithPolicy (the editor asks as the look changes) with whatever the
++-- page draws as its cart: { title, total, lines = { { label, price, key } }, cash, bank }. `key` names the part a
++-- line is ('c:11', 'p:0', 'hair', 'ov:beard', 'tat:<collection>/<overlay>', 'face'): the page puts it back.
++-- `cash` / `bank` are what the player has there, or false when the store does not take it.
++-- The save then comes as whip_core:appearance:saveWithPolicy: every part the policy does not allow is put back
++-- from the saved look, onSave runs (charge there), and only then is it kept. While a policy is set the plain
++-- saveAppearance is refused, so the store's save cannot be skipped. A policy lasts 30 minutes or one save.
++
++-- What each editor category (html/js/creator-data.js CATEGORIES ids; 'tattoos' = every tattoo part) changes.
++local POLICY_FIELDS = {
++    heritage = { top = { 'headBlend' } }, features = { top = { 'faceFeatures' } }, eyes = { top = { 'eyeColor' } },
++    hair = { top = { 'hair', 'hairFade' } },
++    eyebrows = { overlays = { 'eyebrows' } }, beard = { overlays = { 'beard' } },
++    makeup = { overlays = { 'makeup', 'blush', 'lipstick' } },
++    skin = { overlays = { 'blemishes', 'ageing', 'complexion', 'sunDamage', 'moles' } },
++    chestHair = { overlays = { 'chestHair' } },
++    mask = { components = { '1' } }, tops = { components = { '11' } }, undershirt = { components = { '8' } },
++    arms = { components = { '3' } }, legs = { components = { '4' } }, shoes = { components = { '6' } },
++    accessory = { components = { '7' } }, armor = { components = { '9' } }, decal = { components = { '10' } },
++    bag = { components = { '5' } },
++    hat = { props = { '0' } }, glasses = { props = { '1' } }, ear = { props = { '2' } }, watch = { props = { '6' } },
++    bracelet = { props = { '7' } },
++    tattoos = { top = { 'tattoos' } },
++    outfits = {},   -- the Saved tab only puts clothes on: what it may change is the clothing categories' business
++}
++local POLICY_TTL = 1800
++local appearancePolicies = {}   -- [source] = { allow = { [id] = true }, onSave, at }
++
++exports('SetAppearancePolicy', function(source, policy)
++    source = tonumber(source)
++    if not source then return false, 'no player' end
++    if policy == nil then appearancePolicies[source] = nil return true end
++    if type(policy) ~= 'table' or type(policy.allow) ~= 'table' then
++        return false, 'policy.allow is a list of editor categories'
++    end
++    local allow = {}
++    for _, id in ipairs(policy.allow) do
++        if not POLICY_FIELDS[id] then return false, 'unknown editor category: ' .. tostring(id) end
++        allow[id] = true
++    end
++    appearancePolicies[source] = { allow = allow, onSave = policy.onSave, onQuote = policy.onQuote, at = os.time() }
++    return true
++end)
++
++AddEventHandler('playerDropped', function() appearancePolicies[source] = nil end)
++
++--- `new` with every part the policy does not allow taken from `old` (a copy). The body never changes.
++local function keepDisallowed(new, old, allow)
++    new.model = old.model
++    for id, f in pairs(POLICY_FIELDS) do
++        if not allow[id] then
++            for _, key in ipairs(f.top or {}) do new[key] = old[key] end
++            for _, group in ipairs({ 'overlays', 'components', 'props' }) do
++                if f[group] then
++                    new[group] = new[group] or {}
++                    for _, key in ipairs(f[group]) do new[group][key] = (old[group] or {})[key] end
++                end
++            end
++        end
++    end
++    return new
++end
++
++--- The policy in force, and the look as it would be kept (sanitized, disallowed parts put back), or nil and why.
++local function policyLook(source, player, appearance)
++    local policy = appearancePolicies[source]
++    if not policy or os.time() - policy.at > POLICY_TTL then
++        appearancePolicies[source] = nil
++        return nil, nil, nil, 'The store visit is over. Open it again.'
++    end
++    local encoded = json.encode(appearance)
++    if not encoded or #encoded > 10000 then return nil, nil, nil, 'That look is too big' end
++    local clean, err = sanitizeAppearance(appearance)
++    if not clean then return nil, nil, nil, 'Look refused: ' .. (err or 'invalid') end
++    local old = player:getMetadata('appearance')
++    old = type(old) == 'table' and old.model and json.decode(json.encode(old)) or nil
++    if old then clean = keepDisallowed(clean, old, policy.allow) end
++    return policy, clean, old
++end
++
++-- The cart, asked again as the look changes (the editor polls; a look that did not change is not asked).
++SecureCallback('whip_core:appearance:quoteWithPolicy', {
++    rateLimit = 250, burst = 6,
++    params = { { 'appearance', 'any' } },
++}, function(source, player, appearance)
++    local policy, clean, old, why = policyLook(source, player, appearance)
++    if not policy then return false, why end
++    if not policy.onQuote then return { total = 0, lines = {} } end
++    local ran, quote = pcall(policy.onQuote, source, old, clean)
++    if not ran or type(quote) ~= 'table' then
++        print(('[whip_core:appearance] a store\'s onQuote failed: %s'):format(tostring(quote)))
++        return false, 'The store did not answer.'
++    end
++    return quote
++end)
++
++SecureCallback('whip_core:appearance:saveWithPolicy', {
++    rateLimit = 2000,
++    params = { { 'appearance', 'any' }, { 'method', 'string', 8, '' } },
++}, function(source, player, appearance, method)
++    local policy, clean, old, why = policyLook(source, player, appearance)
++    if not policy then return false, why end
++
++    if policy.onSave then
++        local ran, ok, why = pcall(policy.onSave, source, old, clean, { method = method })
++        if not ran then
++            print(('[whip_core:appearance] a store\'s onSave failed: %s'):format(tostring(ok)))
++            return false, 'The store did not answer. Try again.'
++        end
++        if ok == false then return false, type(why) == 'string' and why or 'Not saved' end
++    end
++
++    appearancePolicies[source] = nil
++    player:setMetadata('appearance', clean)
++    player:save()
++    return clean
++end)
++
+ SecureEvent('whip_core:server:saveAppearance', {
+     rateLimit = 2000,
+     params = { {'appearance', 'any'} },
+ }, function(source, player, appearance)
++    -- D11 PATCH appearance-policy: a store's editor saves through saveWithPolicy (its check and charge).
++    if appearancePolicies[source] then return false, 'Save through the store\'s cart' end
++
+     -- Byte cap first — no point walking a table whose encoding is absurd.
+     local encoded = json.encode(appearance)
+     if not encoded or #encoded > 10000 then return end
