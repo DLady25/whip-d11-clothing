@@ -1,5 +1,8 @@
 # D11 Clothing for WHIP
 
+> **Installing?** Follow [INSTALL.md](INSTALL.md) (English and Português): the whole D11 set on a stock whip_core
+> 1.2.0, step by step, with the patch order, server.cfg and what to check in the console.
+
 The clothing stores and the clothes-as-items we run on District 11 (D11), built on [WHIP](https://github.com/WHIPFX/whip_core)'s
 own character editor and inventory. Built and tested on whip_core 1.0.1; works on 1.1.x with the patch and on 1.2.0
 without any patch.
