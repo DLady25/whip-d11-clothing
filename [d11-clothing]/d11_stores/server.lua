@@ -211,7 +211,10 @@ RegisterNetEvent('d11_stores:open', function(i)
     local src = source
     local store = type(i) == 'number' and (Config.Stores or {})[i]
     local t = store and Config.Types[store.type]
-    if not t or not near(src, store) then return end
+    if not t then return end
+    if not near(src, store) then   -- walked away during the countdown (Config.OpenDelay)
+        return exports.whip_core:NotifyPlayer(src, L('You walked away from the counter', 'Você saiu do balcão'), 'error')
+    end
 
     local only, prices, shown = {}, {}, {}
     for _, g in ipairs(Config.Groups) do

@@ -5,7 +5,7 @@ lua54 'yes'
 name 'd11_clothing'
 author 'District 11 (D11)'
 description 'Clothing as items on WHIP: the inventory\'s Equipped strip is what the character wears'
-version '1.0.0'
+version '1.1.0'
 license 'MIT'
 
 -- 11 items d11_clothing_*, one Equipped slot per category. Needs Config.ContainerSlots.accessory = 16 in
@@ -18,5 +18,8 @@ shared_scripts {
 }
 client_script 'client.lua'
 server_script 'server.lua'
+
+-- Which base-game arm is a glove (client.lua, Gloves).
+files { 'data/gloves-*.json' }
 
 whip_requires '1.0'

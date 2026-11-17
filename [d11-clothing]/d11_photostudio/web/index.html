@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Photo studio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="studio" hidden>
+    <!-- O palco: arrastar gira e sobe/desce a câmera, a roda aproxima. -->
+    <div id="stage"></div>
+    <!-- O que sai na foto: a moldura 3:4 no centro. -->
+    <div id="frame"><span class="frame-tag" data-t="frame">Photo</span></div>
+
+    <section id="left" class="panel">
+        <header class="head">
+            <div class="title"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2.2l1.4-2h5.8l1.4 2h2.2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5Z"/><circle cx="12" cy="13" r="3.4"/></svg><span data-t="title">Photo studio</span></div>
+            <div class="sub"><span data-t="sub">Pick a pose for the photo of</span> <b id="look-name">your outfit</b>.</div>
+        </header>
+        <nav id="tabs"></nav>
+        <label class="search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+            <input id="search" type="text" placeholder="Search pose..." data-tp="search" autocomplete="off" spellcheck="false"></label>
+        <div id="poses" role="listbox"></div>
+        <footer class="actions">
+            <button id="shoot" class="btn primary"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2.2l1.4-2h5.8l1.4 2h2.2A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5Z"/><circle cx="12" cy="13" r="3.4"/></svg><span data-t="shoot">Take photo</span></button>
+            <button id="back" class="btn quiet">&larr; <span data-t="back">Back to the outfit</span></button>
+        </footer>
+    </section>
+
+    <section id="right" class="panel">
+        <div class="title small"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg><span data-t="controls">Controls</span></div>
+        <div class="group" data-t="mouseKeys">Mouse and keyboard</div>
+        <div class="row"><span class="ico">LMB</span><span><b data-t="drag">Drag</b><span data-t="dragWhat">Camera: turn and raise</span></span></div>
+        <div class="row"><span class="ico">RMB</span><span><b data-t="rdrag">Right-drag</b><span data-t="turnPed">Turn the character</span></span></div>
+        <div class="row spin"><span class="ico">A D</span><span><b data-t="turnPed">Turn the character</b><span data-t="hold">Hold to turn</span></span>
+            <span class="spin-btns"><button class="spin-btn" data-spin="-1" aria-label="Turn left">⟲</button><button class="spin-btn" data-spin="1" aria-label="Turn right">⟳</button></span></div>
+        <div class="row"><span class="ico">⇕</span><span><b data-t="scroll">Scroll</b><span data-t="zoom">Zoom in and out</span></span></div>
+        <div class="row"><span class="ico">R</span><span><b>R</b><span data-t="front">Face the camera again</span></span></div>
+        <div class="row"><span class="ico">↵</span><span><b>Enter</b><span data-t="shoot">Take photo</span></span></div>
+        <div class="row"><span class="ico">Esc</span><span><b>Esc</b><span data-t="back">Back to the outfit</span></span></div>
+    </section>
+
+    <!-- A foto tirada: usar ou tirar outra. -->
+    <div id="preview" hidden>
+        <div class="card">
+            <div class="title small" data-t="theShot">The outfit photo</div>
+            <img id="shot" alt="">
+            <div class="row-btns">
+                <button id="again" class="btn quiet" data-t="again">Take another</button>
+                <button id="use" class="btn primary" data-t="use">Use this photo</button>
+            </div>
+        </div>
+    </div>
+    <div id="busy" hidden data-t="busy">Taking the photo…</div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -39,14 +39,79 @@ local function undressedOf(ped, gender, s)
     return globalOf(ped, { t = 'c', s = s, col = item[1], i = item[2] })
 end
 
+-- ============================================
+-- Gloves: an "arm" (component 3) with a gloved hand (data/gloves-<body>.json)
+-- ============================================
+-- GTA has no glove slot: a glove is an arm with the hand covered. For each base-game arm the data says its type (the
+-- bare arm of the same shape), whether it is a glove and which glove (the style: the same glove on every type). The
+-- Shirt keeps the bare arm of its type; the Gloves item keeps the glove, worn on the shirt's arm type. An arm the
+-- data does not know (a clothing pack's) stays with the Shirt.
+
+local glovesCache = {}   -- [gender] = data or false
+local function glovesOf(gender)
+    if glovesCache[gender] ~= nil then return glovesCache[gender] or nil end
+    local raw = LoadResourceFile(GetCurrentResourceName(), ('data/gloves-%s.json'):format(gender))
+    local ok, d = pcall(json.decode, raw or '')
+    glovesCache[gender] = ok and type(d) == 'table' and d or false
+    return glovesCache[gender] or nil
+end
+
+local armMaps = {}   -- [gender] = { byKey = { ['male_heist_011'] = 74 }, byD = { [74] = 'male_heist_011' } }
+local function armMap(ped, gender)
+    if armMaps[gender] then return armMaps[gender] end
+    local m = { byKey = {}, byD = {} }
+    for d = 0, GetNumberOfPedDrawableVariations(ped, 3) - 1 do
+        local p = partOf(ped, 'c', 3, d, 0)
+        if p then
+            local k = ('%s_%03d'):format(p.col:lower(), p.i)
+            m.byKey[k], m.byD[d] = d, k
+        end
+    end
+    armMaps[gender] = m
+    return m
+end
+
+--- What an arm is: { type, glove, style } (type = the bare arm's key), or nil when the data does not know it.
+local function armInfo(ped, gender, d)
+    local data = glovesOf(gender)
+    if not data or type(d) ~= 'number' or d < 0 then return nil end
+    local k = armMap(ped, gender).byD[d]
+    if not k then return nil end
+    if data.types and data.types[k] then return { type = k, glove = false } end
+    local a = data.arms and data.arms[k]
+    if not a then return nil end
+    return { type = a.type, glove = a.glove == true, style = a.style }
+end
+
+--- The game arm of type `armType` wearing glove `style` (nil = bare), or -1.
+local function armOf(ped, gender, armType, style)
+    local data = glovesOf(gender)
+    if not data or not armType then return -1 end
+    local k = armType
+    if style ~= nil then k = ((data.styles or {})[tostring(style)] or {})[armType] end
+    return k and armMap(ped, gender).byKey[k] or -1
+end
+
 --- What a saved look wears in a category: { parts, piece, tex } or false (nothing past "undressed").
 local function pieceOfLook(ped, gender, app, cat)
     local parts, dressed = {}, false
     for _, s in ipairs(cat.c or {}) do
         local c = (app.components or {})[tostring(s)] or {}
         local d = tonumber(c.drawable) or 0
-        if d ~= undressedOf(ped, gender, s) then dressed = true end
-        local p = partOf(ped, 'c', s, d, tonumber(c.texture))
+        local tex = tonumber(c.texture)
+        if s == 3 then
+            -- A gloved arm becomes the Gloves item; the Shirt keeps the bare arm of the same type.
+            local info = armInfo(ped, gender, d)
+            if cat.gloves then
+                if not (info and info.glove) then return false end
+                dressed = true
+            elseif info and info.glove and info.type then
+                local bare = armOf(ped, gender, info.type, nil)
+                if bare >= 0 then d, tex = bare, 0 end
+            end
+        end
+        if not cat.gloves and d ~= undressedOf(ped, gender, s) then dressed = true end
+        local p = partOf(ped, 'c', s, d, tex)
         if not p then return false end
         parts[#parts + 1] = p
     end
@@ -131,6 +196,17 @@ RegisterNetEvent('d11_clothing:dress', function(changed)
     if not gender or not app or type(changed) ~= 'table' then return end
     app.components, app.props = app.components or {}, app.props or {}
     local before = clothesOf(app)
+    -- The arm on the body now: the shirt's (bare) arm, and the glove over it, if any.
+    local armNow = app.components['3'] or {}
+    local ad, atex = tonumber(armNow.drawable) or undressedOf(ped, gender, 3), tonumber(armNow.texture) or 0
+    local glove = nil   -- { d, tex }
+    local info = armInfo(ped, gender, ad)
+    if info and info.glove then
+        glove = { d = ad, tex = atex }
+        local bare = armOf(ped, gender, info.type, nil)
+        ad, atex = bare >= 0 and bare or undressedOf(ped, gender, 3), 0
+    end
+    local armTouched = false
     for _, cat in ipairs(Config.Categories) do
         local parts = changed[cat.key]
         if parts ~= nil then
@@ -140,8 +216,23 @@ RegisterNetEvent('d11_clothing:dress', function(changed)
                 local p = bySlot['c' .. s]
                 local d, tex = p and globalOf(ped, p) or undressedOf(ped, gender, s), p and p.tex or 0
                 if d < 0 then d, tex = undressedOf(ped, gender, s), 0 end   -- the piece's pack is not running
-                SetPedComponentVariation(ped, s, d, tex, 0)
-                app.components[tostring(s)] = { drawable = d, texture = tex }
+                if s == 3 then
+                    armTouched = true
+                    if cat.gloves then
+                        glove = p and { d = d, tex = tex } or nil
+                    else
+                        ad, atex = d, tex
+                        local i2 = armInfo(ped, gender, d)   -- an older shirt with the glove inside
+                        if i2 and i2.glove then
+                            if not glove then glove = { d = d, tex = tex } end
+                            local bare = armOf(ped, gender, i2.type, nil)
+                            ad, atex = bare >= 0 and bare or undressedOf(ped, gender, 3), 0
+                        end
+                    end
+                else
+                    SetPedComponentVariation(ped, s, d, tex, 0)
+                    app.components[tostring(s)] = { drawable = d, texture = tex }
+                end
             end
             for _, s in ipairs(cat.p or {}) do
                 local p = bySlot['p' .. s]
@@ -155,6 +246,19 @@ RegisterNetEvent('d11_clothing:dress', function(changed)
                 end
             end
         end
+    end
+    if armTouched then
+        local d, tex = ad, atex
+        if glove and glove.d >= 0 then
+            local baseType = (armInfo(ped, gender, ad) or {}).type
+            local gi = armInfo(ped, gender, glove.d)
+            local gd = (gi and gi.style ~= nil and baseType) and armOf(ped, gender, baseType, gi.style) or -1
+            if gd >= 0 then d, tex = gd, glove.tex
+            elseif gi and gi.type == baseType then d, tex = glove.d, glove.tex end
+            -- Else this glove has no version for these arms (long sleeves, one-piece arms): bare hands.
+        end
+        SetPedComponentVariation(ped, 3, d, tex, 0)
+        app.components['3'] = { drawable = d, texture = tex }
     end
     look = app
     if clothesOf(app) ~= before then saveSoon() end

@@ -9,14 +9,35 @@ without any patch.
 
 ## What's inside
 
-`[d11-clothing]/`: drop this folder into your `resources/`. The two resources work on their own or together.
+`[d11-clothing]/`: drop this folder into your `resources/`. Each resource works on its own or together.
 
 | Resource | What it does |
 | --- | --- |
 | `d11_stores` | Clothing store, barber, tattoo studio and plastic surgeon. Each store **type** opens WHIP's character editor on only the tabs it unlocks and charges for what changed, cash or bank. Store types, prices and locations are edited in game at **/whip → Settings → Clothing stores**. 25 stores on GTA's own spots out of the box. |
 | `d11_clothing` | Every piece the character wears is a real item in the inventory's **Equipped** strip: take it off, store it, give it, drop it, get it stolen, put it on again. Clothes from the editor or a store become items by themselves. |
+| `d11_wardrobe` | The data behind our editor (whip_core 1.2.0 + `whip_core-creator-d11.patch`), base game only: the colours that really exist, the undershirts and arms made for each top (**smart Combinations**), other versions of a piece, and which arms are gloves. `/roupascan` and `tools/` build the same data for your own clothing packs. |
+| `d11_photostudio` | A photo studio for saved outfits: **Outfit photo** in the editor takes the character to a studio, with poses from WHIP's emote list, turning, zoom and a 3:4 frame; the outfit's card shows the photo. |
 
-`whip_core-patches/`: **only for whip_core 1.0.1 and 1.1.x**, and only for `d11_stores`.
+### Our character editor (whip_core 1.2.0)
+
+`whip_core-patches/whip_core-creator-d11.patch` turns WHIP's character editor into ours, and the stores use the same
+editor, so both look the same; the creator just adds hair and the face:
+
+- NoPixel-style layout: Q / E switch the top tabs, a **Customise** panel on the right with the picked piece and its
+  options, prices on the cards in a store, the wallet at the top, the control legend centred at the bottom.
+- **Upper body**: top, undershirt and arms as one piece. Its **Combinations** offer the undershirts made for that top
+  and keep the arms fitting it (no holes, no clipping); a top's other **Versions** (open / closed...).
+- **Gloves** as their own tab: the gloves made for the arms the top wears; a glove worn stays on when the top changes.
+- Faces split by sex (Female / Male / All), a proper female default, **skin by pick** (any tone on any face).
+- Camera keys 1-4 (face, torso, legs, body), Z / C turn, R front, H hides the interface; search the cards by name.
+- Only the colours that really exist, broken / invisible textures left out (with `d11_wardrobe`).
+- **Outfit photo** button with `d11_photostudio`.
+
+From your `resources/` folder (back up `whip_core` first, restart it after): `patch -p1 < whip_core-creator-d11.patch`.
+It is made and tested on a stock whip_core 1.2.0 and together with whip-d11-inventory's patches. The look comes from
+[`d11_theme`](https://github.com/DLady25/whip-d11-theme) 1.1.0 (`css/creator.css`).
+
+The appearance-policy patches below are **only for whip_core 1.0.1 and 1.1.x**, and only for `d11_stores`.
 
 | Patch | For |
 | --- | --- |
@@ -68,12 +89,18 @@ After the `ensure whip_*` lines (and after your clothing packs):
 setr d11_locale en
 ensure d11_clothing
 ensure d11_stores
+ensure d11_wardrobe        # with the creator patch: smart combinations, gloves, real colours
+ensure d11_photostudio     # with the creator patch: outfit photos
 ```
 
 Restart the server: the Equipped strip only changes size when whip_core restarts. No SQL: WHIP keeps the pieces in
 the inventory.
 
 ## d11_stores
+
+Pressing a store's prompt shows a notice and opens the editor **3 seconds** later, so the player can stand in the
+open where the camera sees them (`Config.OpenDelay` in `d11_stores/config.lua`, 0 opens at once). Walking away from
+the counter meanwhile cancels it.
 
 ### Settings page
 
@@ -117,7 +144,7 @@ and 6 tattoo studios on the map. Everything is in `d11_stores/config.lua` too.
 
 | Equipped slot | Item | Body parts |
 |---|---|---|
-| 6 | `d11_clothing_shirt` | top (11), undershirt (8), arms (3), decal (10) |
+| 6 | `d11_clothing_shirt` | top (11), undershirt (8), bare arms (3), decal (10) |
 | 7 | `d11_clothing_pants` | 4 |
 | 8 | `d11_clothing_shoes` | 6 |
 | 9 | `d11_clothing_mask` | 1 |
@@ -125,16 +152,24 @@ and 6 tattoo studios on the map. Everything is in `d11_stores/config.lua` too.
 | 11 | `d11_clothing_vest` | 9 |
 | 12 | `d11_clothing_hat` | prop 0 |
 | 13 | `d11_clothing_glasses` | prop 1 |
-| 14 | `d11_clothing_ears` | prop 2 |
+| 14 | `d11_clothing_gloves` | the gloved arm (3) |
 | 15 | `d11_clothing_watch` | prop 6 |
-| 16 | `d11_clothing_bracelet` | prop 7 |
+| 16 | `d11_clothing_bag` | bag / parachute (5) |
 
 - **Put on:** drag the piece to its slot in Equipped, or **Use** it. What was in that slot goes to the pockets.
 - **Take off:** drag it out of the strip, or **Use** a worn piece. That body part gets WHIP's own "undressed" look:
   underwear, bare feet, no hat.
 - **Editor / store:** on save, every slot that changed gets a new piece; the old one is gone.
 - **First login:** the clothes of the saved look become items, once per character (character metadata
-  `d11_clothing`). From then on the body wears exactly what is in the strip.
+  `d11_clothing`). From then on the body wears exactly what is in the strip. A **new character** gets its items as
+  soon as the creator saves, with no relog.
+- **Upgrading from 1.0:** Ears and Bracelet left the strip (their slots are now Gloves and Bag). At the next login an
+  old `d11_clothing_ears` / `_bracelet` in those slots goes to the pockets (still an item, no longer worn from the
+  inventory), and the gloves and bag already worn become items.
+- **Gloves:** GTA has no glove slot: a glove is an arm with the hand covered. The Shirt keeps the bare arm of its
+  type and the Gloves item the glove, worn on the shirt's arm type, so swapping the shirt keeps your gloves. Which
+  base-game arm is a glove comes with the resource (`data/gloves-<body>.json`); an arm from a clothing pack stays with
+  the Shirt. Earrings and bracelets stay on the body only, with no item.
 - **Body:** a piece is male or female and only fits that body; one for the other body goes back to the pockets.
 - **Uniforms:** clothes put on by another script (a job locker) stay. Moving one piece only changes that slot.
 - **Clothing packs:** each piece keeps its **collection** and its number inside it, not the game's global index, so

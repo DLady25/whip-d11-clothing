@@ -13,7 +13,10 @@ for i, c in ipairs(Config.Categories) do
     CAT_OF_ITEM['d11_clothing_' .. c.key] = c.key
 end
 
-local CONVERTED = 'd11_clothing'   -- character metadata: the saved look's clothes already became items
+local CONVERTED = 'd11_clothing'   -- character metadata: the saved look's clothes already became items (= version)
+-- 2: Gloves and Bag became items (in the old Ears and Bracelet slots). A character converted by 1.0 converts once
+-- more, so the gloves and bag already worn get into the strip.
+local VERSION = 2
 local BODY = { male = L('Male', 'Masculino'), female = L('Female', 'Feminino') }
 
 local function itemOf(cat) return 'd11_clothing_' .. cat end
@@ -31,6 +34,19 @@ end
 
 -- [src] = { gender, worn = { [cat] = signature the body has } }
 local state = {}
+
+--- A clothing slot holding a piece that is not its own (the 1.0 Ears / Bracelet, or the slot changed category): the
+--- piece goes to the pockets, so the slot can take the right one.
+local function vacate(src)
+    local s = exports.whip_core:StoreRead({ kind = 'player', id = src, sub = 'accessory' })
+    for slot, it in pairs((s or {}).items or {}) do
+        local cat = CAT_OF_SLOT[tonumber(slot)]
+        if cat and it.item ~= itemOf(cat) then
+            local ok = exports.whip_core:StoreMove(strip(src, tonumber(slot)), pockets(src), { reason = 'd11_clothing: slot changed' })
+            if not ok then print(('[d11_clothing] %s: %s in slot %s did not fit in the pockets'):format(src, it.item, slot)) end
+        end
+    end
+end
 
 --- The pieces in the strip, by category.
 local function readStrip(src)
@@ -172,9 +188,10 @@ RegisterNetEvent('d11_clothing:ready', function(gender, current)
     local src = source
     if not validGender(gender) or type(current) ~= 'table' then return end
     state[src] = { gender = gender, worn = {} }
-    if not exports.whip_core:GetPlayerMetadata(src, CONVERTED) then
+    vacate(src)
+    if (tonumber((exports.whip_core:GetPlayerMetadata(src, CONVERTED))) or 0) < VERSION then
         -- Marked converted only if every piece got in: otherwise the next login tries again.
-        if reconcile(src, current) then exports.whip_core:SetPlayerMetadata(src, CONVERTED, 1) end
+        if reconcile(src, current) then exports.whip_core:SetPlayerMetadata(src, CONVERTED, VERSION) end
         return
     end
     -- The strip rules: the body wears exactly what is in it.
@@ -198,7 +215,9 @@ RegisterNetEvent('whip_core:server:saveAppearance', function(appearance)
     local src = source
     -- At a d11_stores store the purchase comes as d11_stores:paid instead.
     if inStore(src) then return end
-    if state[src] and type(appearance) == 'table' then TriggerClientEvent('d11_clothing:check', src, appearance) end
+    -- A new character: at login there was no look yet (the creator was open), so no 'ready' and no state. The
+    -- creator's first save counts as the login: the client checks and the clothes become items right away.
+    if type(appearance) == 'table' then TriggerClientEvent('d11_clothing:check', src, appearance) end
 end)
 
 -- A purchase paid at a d11_stores store: the client checks the new look and sends what is worn.
@@ -208,9 +227,21 @@ end)
 
 RegisterNetEvent('d11_clothing:editor', function(gender, current)
     local src = source
+    if not validGender(gender) or type(current) ~= 'table' then return end
     local e = state[src]
-    if not e or not validGender(gender) or type(current) ~= 'table' then return end
+    if not e then
+        -- A new character's first look (see saveAppearance above): the state starts here and, if every piece got
+        -- in, the character is marked converted, so the next login does not convert again.
+        e = { gender = gender, worn = {} }
+        state[src] = e
+        vacate(src)
+        if reconcile(src, current) and (tonumber((exports.whip_core:GetPlayerMetadata(src, CONVERTED))) or 0) < VERSION then
+            exports.whip_core:SetPlayerMetadata(src, CONVERTED, VERSION)
+        end
+        return
+    end
     e.gender = gender
+    vacate(src)
     reconcile(src, current)
 end)
 
@@ -263,5 +294,21 @@ Whip.register(function()
         Whip.core:RegisterUseHandler(key, function(src, _, slotData, addr) return use(src, slotData, addr) end)
         local okSlot, whySlot = Whip.core:RegisterAccessorySlot({ slot = SLOT_OF[c.key], accepts = key, label = c.label })
         if not okSlot then print(('[d11_clothing] slot %d (%s) refused: %s'):format(SLOT_OF[c.key], c.label, tostring(whySlot))) end
+    end
+    -- Pieces of categories that left (Ears, Bracelet): still items, just not worn from the inventory.
+    for _, c in ipairs(Config.Retired or {}) do
+        local key = itemOf(c.key)
+        local ok, why = Whip.core:RegisterItem(key, {
+            name = c.label,
+            desc = L('An old clothing piece: no longer worn from the inventory. Keep, sell or drop it.',
+                     'Peça de roupa antiga: não se veste mais pelo inventário. Pode guardar, vender ou descartar.'),
+            weight = Config.Weight, type = 'clothing', stack = false, usable = false,
+            metaFields = {
+                { key = 'piece', label = L('Piece', 'Peça') },
+                { key = 'colour', label = L('Colour', 'Cor') },
+                { key = 'body', label = L('Body', 'Corpo') },
+            },
+        })
+        if not ok then print(('[d11_clothing] item %s refused: %s'):format(key, tostring(why))) end
     end
 end)

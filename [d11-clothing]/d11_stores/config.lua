@@ -23,6 +23,10 @@ Config.Groups = {
 -- Arms and decal follow the top: never charged.
 Config.FreeCats = { arms = true, decal = true }
 
+-- Seconds between pressing the prompt and the editor opening: a notice tells the player to stand where the camera will
+-- see them (in the open, facing the room). 0 opens at once.
+Config.OpenDelay = 3
+
 -- Store types: what each one unlocks (<group> = true) and the price per changed item (price_<group>, $; 0 = free).
 -- With the patch, "Face and skin" is charged once whatever changed; on whip_core 1.2.0 it is per changed part.
 -- Blip, blip colour and clerk ped per type.

@@ -5,7 +5,7 @@ lua54 'yes'
 name 'd11_stores'
 author 'District 11 (D11)'
 description 'Clothing store, barber, tattoo studio and plastic surgeon on WHIP\'s character editor, with prices and a settings page'
-version '1.0.0'
+version '1.1.0'
 license 'MIT'
 
 -- Each store type opens WHIP's character editor on only the tabs it unlocks and charges for what changed.

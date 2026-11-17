@@ -1,0 +1,1504 @@
+D11 creator for whip_core 1.2.0 (LGPL-3.0, like whip_core): the editor of whip-d11-clothing.
+Faces by sex, skin by pick, camera keys, NoPixel-style layout (Q/E tabs, Customise panel), "Upper body" with smart
+undershirt/arms Combinations, Gloves, search, Versions, outfit photos (d11_photostudio). Needs d11_wardrobe for the
+wardrobe data; without it the editor still works, without combinations and gloves.
+Apply from resources/: patch -p1 < whip_core-creator-d11.patch
+
+diff -ru a/whip_core/client/appearance.lua b/whip_core/client/appearance.lua
+--- a/whip_core/client/appearance.lua
++++ b/whip_core/client/appearance.lua
+@@ -34,21 +34,24 @@
+ -- Default appearance template
+ 
+ local function GetDefaultAppearance(gender)
+-    local model = (gender == 'female') and 'mp_f_freemode_01' or 'mp_m_freemode_01'
++    local female = (gender == 'female')
++    local model = female and 'mp_f_freemode_01' or 'mp_m_freemode_01'
++    -- D11 PATCH creator-faces: a new face starts from a mother's head (21) and a father's (0), leaning to the
++    -- body's own side, with eyebrows on (and hair on a female body), instead of two male heads (0/0) mixed half and half.
+     return {
+         model = model,
+         headBlend = {
+-            mom = 0, dad = 0, grandparent = 0,
+-            faceWeight = 0.5, skinWeight = 0.5, thirdWeight = 0.0
++            mom = 21, dad = 0, grandparent = 0,
++            faceWeight = female and 0.15 or 0.85, skinWeight = 0.5, thirdWeight = 0.0
+         },
+         faceFeatures = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                         0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+         eyeColor = 0,
+-        hair = {style = 0, texture = 0, color = 0, highlight = 0},
++        hair = {style = female and 4 or 0, texture = 0, color = 0, highlight = 0},
+         overlays = {
+             blemishes    = {type = 0, opacity = 0.0},
+             beard        = {type = 0, opacity = 0.0, color = 0, color2 = 0},
+-            eyebrows     = {type = 0, opacity = 0.0, color = 0, color2 = 0},
++            eyebrows     = {type = 0, opacity = 1.0, color = 0, color2 = 0},
+             ageing       = {type = 0, opacity = 0.0},
+             makeup       = {type = 0, opacity = 0.0, color = 0, color2 = 0},
+             blush        = {type = 0, opacity = 0.0, color = 0, color2 = 0},
+@@ -188,13 +191,17 @@
+     if not skipBlendBake then
+         -- Head blend (genetics)
+         local hb = appearance.headBlend or {}
++        -- D11 PATCH creator-skin: a skin picked for any face (hb.skin, a head number) is all three skin parents;
++        -- without it the skin blends mom -> dad as before.
++        local skin = tonumber(hb.skin)
++        if skin and (skin < 0 or skin > 45) then skin = nil end
+         SetPedHeadBlendData(ped,
+             hb.mom or 0,           -- shape first
+             hb.dad or 0,           -- shape second
+             hb.grandparent or 0,   -- shape third
+-            hb.mom or 0,           -- skin first
+-            hb.dad or 0,           -- skin second
+-            hb.grandparent or 0,   -- skin third
++            skin or hb.mom or 0,           -- skin first
++            skin or hb.dad or 0,           -- skin second
++            skin or hb.grandparent or 0,   -- skin third
+             (hb.faceWeight or 0.5) + 0.0,  -- shape mix
+             (hb.skinWeight or 0.5) + 0.0,  -- skin mix
+             (hb.thirdWeight or 0.0) + 0.0, -- third mix
+@@ -349,12 +356,13 @@
+     -- Zoom has the same range on every tab: all the way in is a face close-up, all the way out the whole body.
+     zoomStep     = 0.12,    -- metres per wheel notch
+     distMin      = 0.62,
+-    distMax      = 3.10,    -- = CAM_FRAMINGS.body.dist
++    distMax      = 4.20,    -- D11 PATCH creator-photostudio: 3.10 (= CAM_FRAMINGS.body.dist) -> 4.20, room to step back for a photo
+ }
+ 
+ --- Every shot the creator uses. `bone` is the look-at point, `up` nudges it (metres), `dist` is how far
+ --- back, `pitch` how far above, `yaw` the bearing from the ped's facing (180 is face-on).
+ local CAM_FRAMINGS = {
++    face  = { bone = 31086, up = 0.03, dist = 0.95, pitch = 2.0,  yaw = 200.0, fov = 30.0 },  -- SKEL_Head (D11 PATCH creator-faces)
+     torso = { bone = 24818, up = 0.06, dist = 2.05, pitch = 5.0,  yaw = 217.0, fov = 36.0 },  -- SKEL_Spine3
+     legs  = { bone = 63931, up = 0.15, dist = 2.10, pitch = 6.0,  yaw = 217.0, fov = 38.0 },  -- SKEL_L_Calf
+     body  = { bone = 23553, up = 0.05, dist = 3.10, pitch = 4.0,  yaw = 217.0, fov = 45.0 },  -- SKEL_Spine0
+@@ -428,6 +436,9 @@
+ -- world is (NUI creatorStage) and the camera slides sideways to stand the ped there (ComputeCamPose).
+ local camShiftX, tShiftX = 0.0, 0.0
+ local camFraming = 'torso'   -- the framing the shot was last pointed at
++-- D11 PATCH creator-photostudio: switchCamera { lock = true } keeps the camera's bearing where it is in the world, so
++-- the ped can be turned in front of it (d11_photostudio); { lock = false } follows the ped again. nil = follows.
++local camLockH = nil
+ 
+ -- The live pose, kept between frames so the loop smooths rather than snaps.
+ local cpx, cpy, cpz, cpPitch, cpYaw, cpFov = 0.0, 0.0, 0.0, 0.0, 0.0, 45.0
+@@ -497,7 +508,7 @@
+ local function ComputeCamPose()
+     local ped  = PlayerPedId()
+     local root = GetEntityCoords(ped)
+-    local ph   = GetEntityHeading(ped)
++    local ph   = camLockH or GetEntityHeading(ped)   -- D11 PATCH creator-photostudio: a locked heading keeps the shot still while the ped turns
+ 
+     -- The shot is built around a point straight up from the ped's root.
+     local lx, ly, lz = root.x, root.y, root.z + camAimU
+@@ -527,6 +538,7 @@
+ 
+ --- Create the scripted camera for this rig.
+ local function StartCreatorCamera(preset)
++    camLockH = nil   -- D11 PATCH creator-photostudio
+     ApplyCamFraming(preset)
+     tYaw = wrap180(CAM_FRAMINGS[camFraming].yaw)
+ 
+@@ -1151,9 +1163,10 @@
+ --- One string describing this head blend's inputs, compared between previews.
+ local function blendSig(hb)
+     hb = hb or {}
+-    return ('%s|%s|%s|%s|%s|%s'):format(
++    return ('%s|%s|%s|%s|%s|%s|%s'):format(
+         hb.mom or 0, hb.dad or 0, hb.grandparent or 0,
+-        hb.faceWeight or 0.5, hb.skinWeight or 0.5, hb.thirdWeight or 0.0)
++        hb.faceWeight or 0.5, hb.skinWeight or 0.5, hb.thirdWeight or 0.0,
++        hb.skin or '-')   -- D11 PATCH creator-skin
+ end
+ 
+ --- Apply only what changed between two previews (a full ApplyAppearance is ~50 natives a frame).
+@@ -1503,11 +1516,39 @@
+     if not CreatorLive() then cb({ ok = false }) return end
+     local yaw = tonumber(data.yaw)
+     if yaw ~= nil and not (yaw > -3600.0 and yaw < 3600.0) then yaw = nil end   -- NaN and the infinities too
+-    if data.preset or not yaw then ApplyCamFraming(data.preset) end
++    -- D11 PATCH creator-faces: `turn` turns the camera round the ped by that much (the Q/E keys).
++    local turn = tonumber(data.turn)
++    if turn ~= nil and not (turn > -360.0 and turn < 360.0) then turn = nil end
++    -- D11 PATCH creator-photostudio: lock/unlock the camera's bearing (see camLockH).
++    if data.lock ~= nil then
++        camLockH = data.lock and GetEntityHeading(PlayerPedId()) or nil
++        if data.preset == nil and not (yaw or turn) then cb({ ok = true }) return end
++    end
++    if data.preset or not (yaw or turn) then ApplyCamFraming(data.preset) end
+     if yaw then tYaw = wrap180(yaw) end
++    if turn then tYaw = wrap180(tYaw + turn) end
+     cb({ ok = true })
+ end)
+ 
++-- D11 PATCH creator-photostudio: the creator's camera for another resource (d11_photostudio, whose page cannot
++-- reach this page's callbacks). One table, any of: lock (true/false, see camLockH), stage (-1..1, where the ped
++-- stands across the screen, 0 = centre), preset (a framing), yaw, turn, and pan / orbitX / zoom as camInput takes.
++exports('CreatorCamera', function(o)
++    if not CreatorLive() or type(o) ~= 'table' then return false end
++    if o.lock ~= nil then camLockH = o.lock and GetEntityHeading(PlayerPedId()) or nil end
++    if o.stage ~= nil then
++        tShiftX = clampN(tonumber(o.stage) or 0.0, -0.8, 0.8)
++        if camPhase == 'enter' then camShiftX = tShiftX end
++    end
++    if type(o.preset) == 'string' then ApplyCamFraming(o.preset) end
++    local yaw, turn = tonumber(o.yaw), tonumber(o.turn)
++    if yaw and yaw > -3600.0 and yaw < 3600.0 then tYaw = wrap180(yaw) end
++    if turn and turn > -360.0 and turn < 360.0 then tYaw = wrap180(tYaw + turn) end
++    local function lim(v, n) return math.max(-n, math.min(n, tonumber(v) or 0.0)) end
++    if o.pan or o.orbitX or o.zoom then CamInput(lim(o.pan, 400.0), lim(o.orbitX, 400.0), 0.0, lim(o.zoom, 20.0)) end
++    return true
++end)
++
+ -- Where the open world is across the screen (creator.js reportStage); the ped is stood there. Kept short
+ -- of the edges. Snapped instead of eased while the camera is still flying in.
+ RegisterNUICallback('creatorStage', function(data, cb)
+diff -ru a/whip_core/html/index.html b/whip_core/html/index.html
+--- a/whip_core/html/index.html
++++ b/whip_core/html/index.html
+@@ -241,49 +241,41 @@
+      the top-left corner of this screen usable. -->
+ <div id="creator">
+     <div class="cr-scale">
++        <!-- D11 PATCH creator-layout: the groups as tabs along the top, Q and E at their ends; the wallet on the right. -->
++        <div class="cr-top">
++            <button type="button" class="cr-key cr-tabkey" data-action="clusterStep" data-step="-1" aria-label="Previous tab">Q</button>
++            <div id="cr-groups"></div>
++            <button type="button" class="cr-key cr-tabkey" data-action="clusterStep" data-step="1" aria-label="Next tab">E</button>
++            <div id="cr-wallet" class="cr-wallet" hidden></div>
++        </div>
+         <div class="cr-left">
+             <div class="cr-head">
+                 <div class="cr-title">
+                     <div class="cr-title-name">Character Creator</div>
+                     <div class="cr-title-sub">Appearance</div>
+                 </div>
+-                <div id="cr-groups"></div>
++                <!-- D11 PATCH creator-layout: the group in big letters, the category beside it. -->
++                <div class="cr-section"><span id="cr-section-name"></span><span id="cr-crumb"></span></div>
+             </div>
++            <div class="cr-body">
+             <div id="cr-rail"></div>
++            <div class="cr-panel">
+             <div id="cr-subtabs"></div>
+-            <div id="cr-options"></div>
++            <!-- D11 PATCH creator-wardrobe: search the cards by name (the game's, in English; common
++                 Portuguese words work too) or number. creator.js shows it where cards have names. -->
++            <div id="cr-search" class="cr-search" hidden>
++                <input id="cr-search-input" class="cr-input" type="text" autocomplete="off" spellcheck="false"
++                       placeholder="Search: black jacket, leather, 245..." aria-label="Search pieces">
++            </div>
+             <div id="cr-grid"></div>
+-
+-            <!-- The panel's foot: the view controls on one line, so the world on
+-                 the right shows only the character and Cancel / Save. -->
+-            <div class="cr-left-foot">
+-                <!-- Control legend. The mouse is authored SVG so its buttons can light
+-                     up as they are used: creator.js toggles .on for whichever input is
+-                     live. Shapes are split into fills (the highlights) and lines (the
+-                     outline) so the highlight sits under the linework. -->
+-                <div class="cr-hints cr-mouse-hints">
+-                    <svg class="cr-mouse" viewBox="0 0 26 38" aria-hidden="true">
+-                        <path class="cr-m-fill cr-m-lmb" d="M13 2.8 H10 A7.2 7.2 0 0 0 2.8 10 V16.4 H13 Z"/>
+-                        <path class="cr-m-fill cr-m-rmb" d="M13 2.8 H16 A7.2 7.2 0 0 1 23.2 10 V16.4 H13 Z"/>
+-                        <rect class="cr-m-fill cr-m-wheel" x="11" y="6.6" width="4" height="8" rx="2"/>
+-                        <rect class="cr-m-line" x="2.8" y="2.8" width="20.4" height="32.4" rx="10.2"/>
+-                        <path class="cr-m-line" d="M13 2.8 V6.6 M13 14.6 V16.4 M2.8 16.4 H23.2"/>
+-                        <rect class="cr-m-line" x="11" y="6.6" width="4" height="8" rx="2"/>
+-                    </svg>
+-                    <span class="cr-hint"><b>Drag</b> Height</span>
+-                    <span class="cr-hint"><b>Right-drag</b> Orbit</span>
+-                    <span class="cr-hint"><b>Hold + scroll</b> Zoom</span>
+-                    <span class="cr-hint"><span class="cr-key">Esc</span> <span id="cr-esc-hint">Cancel</span></span>
+-                </div>
+-                <!-- The same line on a controller: the buttons, built by creator.js
+-                     (buildPadLegend). The CSS shows one legend or the other by html[data-input]. -->
+-                <div class="cr-hints cr-pad-hints" id="cr-pad-hints"></div>
+-
+-                <!-- Undress, at the end of the line: one button, all the clothes off or all back on, to
+-                     see the body under them. Preview only: Save keeps the clothes. Built by creator.js
+-                     (buildUndress); empty for a body it has no underwear for. -->
+-                <div id="cr-undress" class="cr-undress"></div>
+             </div>
++            </div>
++        </div>
++
++        <!-- D11 PATCH creator-layout: the picked item's options on the right, under "Personalização". -->
++        <div class="cr-right">
++            <div class="cr-right-title">Customise</div>
++            <div id="cr-options"></div>
+         </div>
+ 
+         <div id="cr-stage"></div>
+@@ -302,6 +294,40 @@
+                 <button id="cr-save" class="cr-btn cr-btn-primary" data-action="save">Save</button>
+             </div>
+         </div>
++
++        <!-- The view controls on one line, centred at the bottom of the screen (D11 PATCH creator-layout). -->
++        <div class="cr-left-foot">
++            <!-- Control legend. The mouse is authored SVG so its buttons can light
++                 up as they are used: creator.js toggles .on for whichever input is
++                 live. Shapes are split into fills (the highlights) and lines (the
++                 outline) so the highlight sits under the linework. -->
++            <div class="cr-hints cr-mouse-hints">
++                <svg class="cr-mouse" viewBox="0 0 26 38" aria-hidden="true">
++                    <path class="cr-m-fill cr-m-lmb" d="M13 2.8 H10 A7.2 7.2 0 0 0 2.8 10 V16.4 H13 Z"/>
++                    <path class="cr-m-fill cr-m-rmb" d="M13 2.8 H16 A7.2 7.2 0 0 1 23.2 10 V16.4 H13 Z"/>
++                    <rect class="cr-m-fill cr-m-wheel" x="11" y="6.6" width="4" height="8" rx="2"/>
++                    <rect class="cr-m-line" x="2.8" y="2.8" width="20.4" height="32.4" rx="10.2"/>
++                    <path class="cr-m-line" d="M13 2.8 V6.6 M13 14.6 V16.4 M2.8 16.4 H23.2"/>
++                    <rect class="cr-m-line" x="11" y="6.6" width="4" height="8" rx="2"/>
++                </svg>
++                <span class="cr-hint"><b>Drag</b> Height</span>
++                <span class="cr-hint"><b>Right-drag</b> Orbit</span>
++                <span class="cr-hint"><b>Hold + scroll</b> Zoom</span>
++                <span class="cr-hint"><span class="cr-key">Esc</span> <span id="cr-esc-hint">Cancel</span></span>
++            </div>
++            <!-- The same line on a controller: the buttons, built by creator.js
++                 (buildPadLegend). The CSS shows one legend or the other by html[data-input]. -->
++            <div class="cr-hints cr-pad-hints" id="cr-pad-hints"></div>
++
++            <!-- Undress, at the end of the line: one button, all the clothes off or all back on, to
++                 see the body under them. Preview only: Save keeps the clothes. Built by creator.js
++                 (buildUndress); empty for a body it has no underwear for. -->
++            <div id="cr-undress" class="cr-undress"></div>
++
++            <!-- D11 PATCH creator-faces: the camera keys (1-4 framing, Q/E turn, R front, H panels) and Esc,
++                 on their own line under the mouse; each is also a button. Built by creator.js (buildKeyLegend). -->
++            <div class="cr-hints cr-key-hints" id="cr-key-hints"></div>
++        </div>
+     </div>
+ </div>
+ 
+diff -ru a/whip_core/html/js/creator-data.js b/whip_core/html/js/creator-data.js
+--- a/whip_core/html/js/creator-data.js
++++ b/whip_core/html/js/creator-data.js
+@@ -55,6 +55,8 @@
+     watch:    svg('<circle cx="12" cy="12" r="4.5"/><path d="M12 9.5V12l1.8 1"/><path d="M9.5 7.8 10 3h4l.5 4.8"/><path d="M9.5 16.2 10 21h4l.5-4.8"/>'),
+     bracelet: svg('<path d="M5 12a7 7 0 0 1 14 0 7 7 0 0 1-14 0Z"/><path d="M12 5v1.5"/><path d="M12 17.5V19"/><path d="M5.5 9.5 7 10.2"/><path d="M18.5 9.5 17 10.2"/>'),
+     none:     svg('<circle cx="12" cy="12" r="8.5"/><path d="M6 6l12 12"/>'),
++    // A gloved hand, fingers up (D11 PATCH creator-wardrobe: the Gloves tab).
++    glove:    svg('<path d="M8 20v-4.5L5.5 11.8a1.3 1.3 0 0 1 2-1.6L9 12V5.2a1.2 1.2 0 0 1 2.4 0V11V4.2a1.2 1.2 0 0 1 2.4 0V11V5.2a1.2 1.2 0 0 1 2.4 0V12v-4a1.2 1.2 0 0 1 2.4 0v6.5c0 2.6-1.4 4.2-3 5.5"/><path d="M8 17.5h7.5"/>'),
+     // An anchor, the tattoo-flash classic.
+     tattoo:   svg('<circle cx="12" cy="5" r="2"/><path d="M12 7v13"/><path d="M8.5 10h7"/><path d="M5 13c0 4 3 7 7 7s7-3 7-7"/><path d="M3.5 14.5 5 13l1.5 1.5"/><path d="M20.5 14.5 19 13l-1.5 1.5"/>'),
+     // A coat hanger: a saved outfit.
+@@ -123,6 +125,42 @@
+       x: { idx: 19, label: 'Thickness', neg: 'Thin',  pos: 'Thick' } },
+ ];
+ 
++// ---- Heritage heads by sex (D11 PATCH creator-faces) ----
++// GTA's 46 heritage heads as SetPedHeadBlendData numbers them: 0-20 and 42-44 are men's faces,
++// 21-41 and 45 women's. The Heritage grid shows one side at a time (HERITAGE_SEX below).
++export const HEADS = {
++    female: [...Array.from({ length: 21 }, (_, i) => 21 + i), 45],
++    male:   [...Array.from({ length: 21 }, (_, i) => i), 42, 43, 44],
++};
++// The filter chips over the Heritage grid, and the side each parent tab opens on.
++export const HERITAGE_SEX = [
++    { id: 'female', label: 'Female' },
++    { id: 'male',   label: 'Male' },
++    { id: 'all',    label: 'All' },
++];
++export const HERITAGE_SEX_DEFAULT = ['female', 'male', 'all'];   // Mother, Father, Grandparent
++
++// ---- Skin tones (D11 PATCH creator-skin) ----
++// The skin of each of the 46 heritage heads, by head number: the colour of the forehead in its picture (whip_media
++// 00_head). Picking one puts that skin on any face (headBlend.skin), apart from the parents' shape blend.
++export const SKIN_TONES = [
++    '#fecdb6', '#fec6b0', '#8d6256', '#926354', '#db9b7d', '#dda183', '#f0b38b', '#f0b28a', '#be8067', '#cc896e',
++    '#de9c7d', '#e29b7a', '#fecebb', '#fdc9ae', '#926352', '#845e50', '#dea087', '#f5ba93', '#eeb48a', '#c28266',
++    '#efa989', '#fed7bc', '#ffd8bc', '#8f6759', '#946656', '#d1957c', '#d4987c', '#efb990', '#fbbf96', '#ca8a6f',
++    '#cc8a6d', '#e9a27f', '#e6a280', '#fedcc3', '#fed9be', '#93685a', '#926a5c', '#d49a83', '#d2987b', '#f4c098',
++    '#f5c29d', '#e49c7a', '#feccb7', '#fecfb9', '#fecab4', '#fedec5',
++];
++
++// ---- Camera keys (D11 PATCH creator-faces) ----
++// The framings the number keys jump to (client/appearance.lua CAM_FRAMINGS), and how far Q/E turn.
++export const CAM_KEYS = [
++    { key: '1', preset: 'face',  label: 'Face' },
++    { key: '2', preset: 'torso', label: 'Torso' },
++    { key: '3', preset: 'legs',  label: 'Legs' },
++    { key: '4', preset: 'body',  label: 'Body' },
++];
++export const CAM_TURN_STEP = 30;
++
+ // ---- Category tree ----
+ //
+ // The left rail, in render order. `cluster` breaks the rail into its visual
+@@ -144,25 +182,30 @@
+ // `yaw` turns the camera round the ped on switching to the category (180 face-on, 0 from behind,
+ // 90 the ped's right side, 270 its left); without one the camera stays where the player put it.
+ export const CATEGORIES = [
+-    { id: 'heritage',  label: 'Heritage',   cluster: 'face',    kind: 'heritage',  glyph: 'heritage', cam: 'torso' },
+-    { id: 'features',  label: 'Features',   cluster: 'face',    kind: 'features',  glyph: 'face',     cam: 'torso' },
+-    { id: 'eyes',      label: 'Eyes',       cluster: 'face',    kind: 'eyes',      glyph: 'eye',      cam: 'torso' },
+-    { id: 'hair',      label: 'Hair',       cluster: 'face',    kind: 'hair',      glyph: 'hair',     cam: 'torso' },
+-    { id: 'eyebrows',  label: 'Eyebrows',   cluster: 'face',    kind: 'overlays',  glyph: 'brow',     cam: 'torso',
++    { id: 'heritage',  label: 'Heritage',   cluster: 'face',    kind: 'heritage',  glyph: 'heritage', cam: 'face' },
++    { id: 'features',  label: 'Features',   cluster: 'face',    kind: 'features',  glyph: 'face',     cam: 'face' },
++    { id: 'eyes',      label: 'Eyes',       cluster: 'face',    kind: 'eyes',      glyph: 'eye',      cam: 'face' },
++    { id: 'hair',      label: 'Hair',       cluster: 'face',    kind: 'hair',      glyph: 'hair',     cam: 'face' },
++    { id: 'eyebrows',  label: 'Eyebrows',   cluster: 'face',    kind: 'overlays',  glyph: 'brow',     cam: 'face',
+       overlays: [ { key: 'eyebrows', label: 'Eyebrows' } ] },
+-    { id: 'beard',     label: 'Beard',      cluster: 'face',    kind: 'overlays',  glyph: 'beard',    cam: 'torso',
++    { id: 'beard',     label: 'Beard',      cluster: 'face',    kind: 'overlays',  glyph: 'beard',    cam: 'face',
+       overlays: [ { key: 'beard', label: 'Beard' } ] },
+-    { id: 'makeup',    label: 'Makeup',     cluster: 'face',    kind: 'overlays',  glyph: 'makeup',   cam: 'torso',
++    { id: 'makeup',    label: 'Makeup',     cluster: 'face',    kind: 'overlays',  glyph: 'makeup',   cam: 'face',
+       overlays: [ { key: 'makeup', label: 'Makeup' }, { key: 'blush', label: 'Blush' }, { key: 'lipstick', label: 'Lipstick' } ] },
+-    { id: 'skin',      label: 'Skin Detail', cluster: 'face',   kind: 'overlays',  glyph: 'skin',     cam: 'torso',
++    { id: 'skin',      label: 'Skin Detail', cluster: 'face',   kind: 'overlays',  glyph: 'skin',     cam: 'face',
+       overlays: [ { key: 'blemishes', label: 'Blemishes' }, { key: 'ageing', label: 'Ageing' }, { key: 'complexion', label: 'Complexion' }, { key: 'sunDamage', label: 'Sun Damage' }, { key: 'moles', label: 'Moles' } ] },
+     { id: 'chestHair', label: 'Chest Hair', cluster: 'face',    kind: 'overlays',  glyph: 'chest',    cam: 'torso',
+       overlays: [ { key: 'chestHair', label: 'Chest Hair' } ] },
+ 
+     { id: 'mask',      label: 'Mask',       cluster: 'apparel', kind: 'component', glyph: 'mask',     cam: 'torso', comp: 1 },
+-    { id: 'tops',      label: 'Tops',       cluster: 'apparel', kind: 'component', glyph: 'jacket',   cam: 'torso', comp: 11, one: 'Top' },
++    // D11 PATCH creator-wardrobe: the top, its undershirt and its arms are one piece, "Upper body": the
++    // undershirt is picked in the top's band (Combinations) and the arms follow the top (d11_wardrobe). The
++    // Undershirt tab shows only where the editor has no Tops tab (a store that sells undershirts alone).
++    { id: 'tops',      label: 'Upper body', cluster: 'apparel', kind: 'component', glyph: 'jacket', cam: 'torso', comp: 11, one: 'Top' },
+     { id: 'undershirt', label: 'Undershirt', cluster: 'apparel', kind: 'component', glyph: 'tshirt',  cam: 'torso', comp: 8 },
+-    { id: 'arms',      label: 'Arms',       cluster: 'apparel', kind: 'component', glyph: 'shirt',    cam: 'torso', comp: 3 },
++    // The arms tab is Gloves (d11_wardrobe gloves-<body>): the gloves that fit the arms the top wears, and None.
++    // The arms themselves follow the top, or are picked in its band when GTA says nothing.
++    { id: 'arms',      label: 'Gloves',     cluster: 'apparel', kind: 'component', glyph: 'glove',    cam: 'torso', comp: 3, one: 'Gloves' },
+     { id: 'legs',      label: 'Legs',       cluster: 'apparel', kind: 'component', glyph: 'pants',    cam: 'legs',  comp: 4 },
+     { id: 'shoes',     label: 'Shoes',      cluster: 'apparel', kind: 'component', glyph: 'shoe',     cam: 'legs',  comp: 6 },
+     { id: 'accessory', label: 'Accessory',  cluster: 'apparel', kind: 'component', glyph: 'chain',    cam: 'torso', comp: 7 },
+diff -ru a/whip_core/html/js/creator-store.js b/whip_core/html/js/creator-store.js
+--- a/whip_core/html/js/creator-store.js
++++ b/whip_core/html/js/creator-store.js
+@@ -26,7 +26,7 @@
+         if (!storeAllows(only, cat)) continue;
+         if (cat.kind === 'heritage') {
+             const a = from.headBlend || {}, b = to.headBlend || {};
+-            add(cat.id, ['mom', 'dad', 'grandparent', 'faceWeight', 'skinWeight', 'thirdWeight'].some(k => !same(a[k], b[k])) ? 1 : 0);
++            add(cat.id, ['mom', 'dad', 'grandparent', 'faceWeight', 'skinWeight', 'thirdWeight', 'skin'].some(k => !same(a[k], b[k])) ? 1 : 0);   // D11 PATCH creator-skin
+         } else if (cat.kind === 'features') {
+             const a = from.faceFeatures || [], b = to.faceFeatures || [];
+             let diff = false;
+diff -ru a/whip_core/html/js/creator.js b/whip_core/html/js/creator.js
+--- a/whip_core/html/js/creator.js
++++ b/whip_core/html/js/creator.js
+@@ -8,6 +8,8 @@
+     CLUSTER_ORDER, CLUSTER_LABELS,
+     OVERLAY_PALETTE, EYE_COLORS, HAIR_COLORS, MAKEUP_COLORS,
+     TATTOO_FACING_YAW, TATTOO_MAX,
++    HEADS, HERITAGE_SEX, HERITAGE_SEX_DEFAULT, CAM_KEYS, CAM_TURN_STEP,   // D11 PATCH creator-faces
++    SKIN_TONES,                                                            // D11 PATCH creator-skin
+ } from './creator-data.js';
+ import { storeAllows, storeChanges, storePrice } from './creator-store.js';
+ 
+@@ -41,6 +43,8 @@
+ let activeSubtab = 0;           // index into the category's sub-tabs
+ let activeFeatureGroup = null;  // entry from FEATURE_GROUPS (features category)
+ let currentCamPreset = null;
++let heritageSex = 'female';     // D11 PATCH creator-faces: the Heritage grid's side (HERITAGE_SEX)
++let uiHidden = false;           // D11 PATCH creator-faces: H hides the panels to look at the character
+ let cancelArmed = null;         // timeout id while Cancel awaits confirmation
+ 
+ // In a store (client/appearance.lua EditAppearance): { only: Set | null, prices, from (the look opened on),
+@@ -219,6 +223,8 @@
+             mom: a.headBlend.mom, dad: a.headBlend.dad, grandparent: a.headBlend.grandparent,
+             faceWeight: a.headBlend.faceWeight, skinWeight: a.headBlend.skinWeight,
+             thirdWeight: a.headBlend.thirdWeight,
++            // D11 PATCH creator-skin: a skin tone picked for any face (a head number), or none (the parents' blend).
++            skin: typeof a.headBlend.skin === 'number' && a.headBlend.skin >= 0 ? a.headBlend.skin : undefined,
+         },
+         faceFeatures: a.faceFeatures.slice(0, 20),
+         eyeColor: a.eyeColor,
+@@ -474,6 +480,472 @@
+ //     can still go back to it).
+ // The list comes from the server (server/clothing_pictures.lua), as maxVariations.icons.pictures — or
+ // a moment after the open (creatorPictures); without one, nothing is left out.
++// ========================================
++// D11 PATCH creator-wardrobe: d11_wardrobe's data, by body
++//   textures-<body>  per item ('<collection>_<NNN>', as the pictures name it) the colours that really exist
++//                    (tools/build_pictures.py: a picture, not empty, not a copy of another colour). An item
++//                    it does not list keeps every colour. `invisible`: items with nothing to see.
++//   wardrobe-<body>  tops: { arms, armsTex, under: [undershirts] }, unders: { arms, armsTex }: what GTA's shop
++//                    pairs with each piece (/roupascan + tools/build_wardrobe.py).
++// Loaded with a <script> from d11_wardrobe (a fetch of another resource would need CORS). Without the
++// resource, or before /roupascan, the editor behaves as before for what is missing.
++// ========================================
++const WARDROBE_BASE = 'https://cfx-nui-d11_wardrobe/data/';
++const wardrobeAsked = new Set();
++
++function wardrobeData(name) { const w = window.D11_WARDROBE; return (w && w[name]) || null; }
++function bodyOfLook() { return appearance && appearance.model === 'mp_f_freemode_01' ? 'female' : 'male'; }
++
++function loadWardrobe(body) {
++    ['textures', 'wardrobe', 'gloves'].forEach(kind => {
++        const name = `${kind}-${body}`;
++        if (wardrobeData(name) || wardrobeAsked.has(name)) return;
++        wardrobeAsked.add(name);
++        const s = document.createElement('script');
++        s.src = WARDROBE_BASE + name + '.js';
++        s.onload = () => {
++            const k = creatorOpen && activeCategory && activeCategory.kind;
++            if (k === 'component' || k === 'prop' || k === 'hair') { renderGrid(); renderOptions(); }
++        };
++        s.onerror = () => { s.remove(); wardrobeAsked.delete(name); };   // asked again at the next open
++        document.head.appendChild(s);
++    });
++}
++
++/** The item's name as the pictures and d11_wardrobe key it ('mp_m_vinewood_004'), or null. */
++function itemKey(kind, slot, drawable) {
++    const icons = maxVariations.icons;
++    if (!icons || drawable < 0) return null;
++    const names = kind === 'prop' ? (icons.props || {})[String(slot)] : (icons.components || {})[String(slot)];
++    const n = names && names[drawable];
++    return typeof n === 'string' && n ? n.toLowerCase() : null;   // GTA capitalises some collections; the data does not
++}
++
++/** A component's drawable from its key, or -1. */
++const lowerNames = new Map();   // the names array -> its lower-case copy
++function drawableOfKey(slot, key) {
++    const names = maxVariations.icons && (maxVariations.icons.components || {})[String(slot)];
++    if (!names || !key) return -1;
++    let low = lowerNames.get(names);
++    if (!low) { low = names.map(n => String(n || '').toLowerCase()); lowerNames.set(names, low); }
++    return low.indexOf(key);
++}
++
++/** The colours worth offering of one item: the real ones, and the one worn whatever it is. */
++function shownTextures(kind, slot, drawable, count, current) {
++    const all = Array.from({ length: Math.max(0, count) }, (_, i) => i);
++    const t = wardrobeData('textures-' + bodyOfLook());
++    const key = itemKey(kind, slot, drawable);
++    const listed = t && key && ((t[kind === 'prop' ? 'props' : 'components'] || {})[String(slot)] || {})[key];
++    if (!listed) return all;
++    const ok = parseRanges(listed);
++    const out = all.filter(i => ok.has(i) || i === current);
++    return out.length ? out : all;
++}
++
++/** An item the pictures show nothing of (an invisible piece). */
++function invisibleItem(kind, slot, drawable) {
++    const t = wardrobeData('textures-' + bodyOfLook());
++    const inv = t && t.invisible && (t.invisible[kind === 'prop' ? 'props' : 'components'] || {})[String(slot)];
++    const key = inv && itemKey(kind, slot, drawable);
++    return !!(key && inv.includes(key));
++}
++
++/** The undershirt this body wears with nothing on (no undershirt), or null when unknown. */
++function noUndershirt() {
++    const bare = maxVariations.undressed && maxVariations.undressed.components;
++    const v = bare && bare['8'];
++    const d = v && typeof v === 'object' ? v.drawable : v;
++    return typeof d === 'number' ? d : null;
++}
++
++/** What GTA's shop pairs with the top worn: { arms, armsTex, under } or null. */
++function topFit(drawable) {
++    const w = wardrobeData('wardrobe-' + bodyOfLook());
++    return (w && w.tops && w.tops[itemKey('component', 11, drawable)]) || null;
++}
++
++/** D11 PATCH creator-combos: the top's undershirts from the shop. `def` the one it comes with (the shop's
++ *  "no undershirt", most of the time), `pairs` the real ones made for it. `fit` (by the game's name, tools/
++ *  build_wardrobe.py): 'closed' takes none (dress, corset, tank, tee...), 'open' shows one, '' unknown. */
++function topUnders(fit) {
++    const none = noUndershirt();
++    const all = fit && Array.isArray(fit.under) ? fit.under.map(k => drawableOfKey(8, k)).filter(d => d >= 0) : [];
++    return { def: all.length ? all[0] : -1, pairs: all.filter(d => d !== none), fit: (fit && fit.fit) || '' };
++}
++
++/** The undershirts offered with the top worn: the ones made for it; none for a closed piece; else every real one. */
++function undershirtChoices() {
++    const none = noUndershirt();
++    const cur = appearance.components['8'].drawable;
++    const t = topUnders(topFit(appearance.components['11'].drawable));
++    let list, made = false;
++    if (t.pairs.length) { list = t.pairs; made = true; }            // D11 PATCH creator-combos
++    else if (t.fit === 'closed') { list = []; made = true; }       // a dress, a corset, a tee: no undershirt
++    if (!made) {
++        list = [];
++        const max = (maxVariations.components && maxVariations.components['8'] && maxVariations.components['8'].maxDrawable) || 0;
++        for (let i = 0; i < max; i++) {
++            if (i === none || invisibleItem('component', 8, i) || !hasPicture('component', 8, i)) continue;
++            list.push(i);
++        }
++    }
++    if (cur !== none && !list.includes(cur)) list.unshift(cur);
++    return { list, made, none };
++}
++
++/** The correct arms for what is worn on top: the top's, or the undershirt's when the top says none. */
++function fitArms() {
++    const w = wardrobeData('wardrobe-' + bodyOfLook());
++    if (!w) return;
++    const top = topFit(appearance.components['11'].drawable);
++    const under = w.unders && w.unders[itemKey('component', 8, appearance.components['8'].drawable)];
++    const src = top && top.arms ? top : under && under.arms ? under : null;
++    const d = src ? drawableOfKey(3, src.arms) : -1;
++    if (d < 0) return;
++    setArmsKeepingGlove(d, src.armsTex || 0);
++}
++
++/** A top picked: the undershirt it is made for (none, for a closed one) and its arms.
++ *  D11 PATCH creator-combos: an open piece keeps the undershirt worn when nothing in particular is made for it
++ *  (a tee under a jacket stays); a closed or unknown one goes to what the shop puts with it. */
++function fitTop() {
++    const t = topUnders(topFit(appearance.components['11'].drawable));
++    const u = appearance.components['8'];
++    const none = noUndershirt();
++    let want = -1;
++    if (t.pairs.length) {
++        if (!t.pairs.includes(u.drawable) && u.drawable !== t.def) want = t.def >= 0 ? t.def : t.pairs[0];
++    } else if (t.fit === 'closed') {
++        want = none !== null ? none : t.def;
++    } else if (t.fit !== 'open' && t.def >= 0) {
++        want = t.def;
++    }
++    if (want >= 0 && want !== u.drawable) { u.drawable = want; u.texture = 0; }
++    fitArms();
++}
++
++/** The top's band below its colours: the undershirts that go with it, and the colours of the one worn. */
++function topCombosHtml() {
++    const u = appearance.components['8'];
++    const { list, made, none } = undershirtChoices();
++    // D11 PATCH creator-combos: a closed piece with nothing under it has nothing to pick: no Camisetas tab.
++    if (made && !list.length && u.drawable === none) return Promise.resolve('');
++    return nuiCallback('getMaxTexture', { type: 'component', id: 8, drawable: u.drawable }).then(resp => {
++        const count = (resp && resp.maxTexture != null) ? resp.maxTexture : 0;
++        const val = !made ? `${list.length} undershirts` : list.length ? 'Made for this piece' : 'Closed piece: no undershirt';
++        let html = `<div class="cr-texrow cr-combo-row">`;   // D11 PATCH creator-layout: in folding sections
++        if (none !== null) {
++            html += `<button class="cr-tex cr-combo-none${u.drawable === none ? ' selected' : ''}" data-action="under"`
++                + ` data-value="${none}" aria-label="No undershirt" aria-pressed="${u.drawable === none}">`
++                + `${GLYPHS.none}<span class="cr-tex-num">None</span></button>`;
++        }
++        for (const d of list) {
++            const on = d === u.drawable;
++            const src = iconOf('component', 8, d, on ? u.texture : 0);
++            html += `<button class="cr-tex${src ? ' cr-tex-pic' : ''}${on ? ' selected' : ''}" data-action="under"`
++                + ` data-value="${d}" aria-label="Undershirt ${d}" aria-pressed="${on}">${iconImg(src)}`
++                + `<span class="cr-tex-num">${d}</span></button>`;
++        }
++        let out = secHtml('under', 'Undershirts', val, html + '</div>');
++        const texs = shownTextures('component', 8, u.drawable, count, u.texture);
++        if (u.drawable !== none && texs.length > 1) {
++            out += secHtml('utex', 'Undershirt colours', coloursText(texs.length),
++                texRowHtml(count, u.texture, i => iconOf('component', 8, u.drawable, i), texs, 'utex', false));
++        }
++        return out;
++    });
++}
++
++function onUnderClick(el) {
++    const u = appearance.components['8'];
++    u.drawable = Number(el.dataset.value);
++    u.texture = 0;
++    fitArms();
++    dressAgain();
++    schedulePreview();
++    renderOptions();
++}
++
++function onUnderTexClick(el) {
++    const value = Number(el.dataset.value);
++    appearance.components['8'].texture = value;
++    el.parentElement.querySelectorAll('.cr-tex').forEach(t => {
++        const on = Number(t.dataset.value) === value;
++        t.classList.toggle('selected', on);
++        t.setAttribute('aria-pressed', on ? 'true' : 'false');
++    });
++    const tile = document.querySelector(`#cr-options .cr-combo-row .cr-tex.selected`);
++    const img = tile && tile.querySelector('img.cr-icon');
++    const src = iconOf('component', 8, appearance.components['8'].drawable, value);
++    if (img && src) img.setAttribute('src', src);
++    dressAgain();
++    schedulePreview();
++}
++
++// ========================================
++// D11 PATCH creator-layout: the screen laid out as tabs on top, the group's categories as icons on the
++// left with the cards, the item's options on the right in folding sections (a top's in tabs: Estilos,
++// Camisetas, Braços), the cart, Save and the keys at the bottom right, the wallet at the top right.
++// ========================================
++const collapsedSecs = new Set();   // sections folded, by id, kept while the editor is open
++let activePTab = 0;                // the Personalização tab showing (a top's)
++
++/** One folding section of the Personalização panel; '' when it has nothing. */
++function secHtml(id, title, val, body) {
++    if (!body) return '';
++    const shut = collapsedSecs.has(id);
++    return `<div class="cr-sec${shut ? ' collapsed' : ''}" data-sec="${id}">`
++        + `<button type="button" class="cr-sec-head" data-action="secToggle" data-sec="${id}" aria-expanded="${!shut}">`
++        + `<span class="cr-sec-title">${title}</span><span class="cr-sec-val">${val || ''}</span>${CHEVRON}</button>`
++        + `<div class="cr-sec-body">${body}</div></div>`;
++}
++
++function onSecToggle(el) {
++    const id = el.dataset.sec, sec = el.closest('.cr-sec');
++    if (!id || !sec) return;
++    const shut = !collapsedSecs.has(id);
++    if (shut) collapsedSecs.add(id); else collapsedSecs.delete(id);
++    sec.classList.toggle('collapsed', shut);
++    el.setAttribute('aria-expanded', String(!shut));
++    const body = el.closest('.cr-band-body');
++    if (body) markBandScroll(body);
++}
++
++/** Tabs over the panel's sections, one showing; a single one needs no tabs. `tabs`: [[label, html], ...]. */
++function ptabsHtml(tabs) {
++    tabs = tabs.filter(t => t[1]);
++    if (tabs.length < 2) return tabs.map(t => t[1]).join('');
++    if (activePTab >= tabs.length) activePTab = 0;
++    return `<div class="cr-ptabs">` + tabs.map((t, i) => `<button type="button" class="cr-ptab${i === activePTab ? ' active' : ''}"`
++        + ` data-action="ptab" data-idx="${i}" aria-pressed="${i === activePTab}">${t[0]}</button>`).join('') + `</div>`
++        + tabs[activePTab][1];
++}
++
++/** Q / E: the group before or after the one showing. */
++function stepCluster(d) {
++    const list = shownClusters, i = list.indexOf(activeCluster);
++    if (i < 0 || list.length < 2) return;
++    selectCluster(list[(i + d + list.length) % list.length]);
++}
++
++/** The big words over the cards: the group, and the category beside it. */
++function markSection() {
++    const name = $('cr-section-name'), crumb = $('cr-crumb');
++    if (name) name.textContent = CLUSTER_LABELS[activeCluster] || '';
++    if (crumb) crumb.textContent = activeCategory ? activeCategory.label : '';
++}
++
++/** What one item of `cat` costs here: the store's price for it, or 0 (the creator, or free). */
++function unitPrice(cat) {
++    if (!cat) return 0;
++    if (store && store.prices) {
++        return Math.max(0, Number(store.prices[cat.id] ?? store.prices[cat.cluster] ?? store.prices.default) || 0);
++    }
++    return 0;
++}
++
++// The footer's height, so the Personalização panel above it takes all the room there is.
++(function watchFooter() {
++    const root = document.getElementById('creator');
++    const foot = root && root.querySelector('.cr-footer');
++    if (!foot || typeof ResizeObserver === 'undefined') return;
++    new ResizeObserver(() => root.style.setProperty('--cr-foot-h', foot.offsetHeight + 'px')).observe(foot);
++})();
++
++const BANK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"'
++    + ' stroke-linejoin="round" aria-hidden="true"><path d="M3 10 12 4l9 6"/><path d="M5 10v8M9.5 10v8M14.5 10v8M19 10v8"/><path d="M3 20h18"/></svg>';
++
++/** The wallet at the top right, in a store: cash and bank, as the store reported them. */
++function markWallet() {
++    const el = $('cr-wallet');
++    if (!el) return;
++    let cash = null, bank = null;
++    if (store && store.wallet) {
++        if (typeof store.wallet.cash === 'number') cash = store.wallet.cash;
++        if (typeof store.wallet.bank === 'number') bank = store.wallet.bank;
++    }
++    el.hidden = cash === null && bank === null;
++    const n = (v) => Math.round(v).toLocaleString('en-US');
++    el.innerHTML = (cash !== null ? `<span class="cr-wallet-chip" title="Cash"><b>$</b>${n(cash)}</span>` : '')
++        + (bank !== null ? `<span class="cr-wallet-chip" title="Bank">${BANK_SVG}${n(bank)}</span>` : '');
++}
++
++// ---- D11 PATCH creator-wardrobe: gloves (gloves-<body>, tools/build_gloves.py) ----
++// GTA has no gloves slot: a glove is an arms item, the bare arms of one type with gloved hands. The data says,
++// per arms item, its type (the base arms it is shaped like), whether it is a glove and its style (the same
++// glove across the types). So the Gloves tab offers the gloves of the arms' type, and a top that changes the
++// arms keeps the glove on, in the new type.
++function glovesData() { return wardrobeData('gloves-' + bodyOfLook()); }
++
++/** What an arms drawable is: { type, glove, style }, or null when unknown. */
++function armsInfo(drawable) {
++    const g = glovesData(), k = itemKey('component', 3, drawable);
++    if (!g || !k) return null;
++    if (g.types && g.types[k]) return { type: k, glove: false, style: null };
++    const a = g.arms && g.arms[k];
++    return a ? { type: a.type || null, glove: !!a.glove, style: a.style != null ? a.style : null } : null;
++}
++
++/** The arms drawable of `type` wearing glove `style` (null: bare), or -1. */
++function armsOf(type, style) {
++    const g = glovesData();
++    if (!g || !type) return -1;
++    const key = style != null ? ((g.styles || {})[String(style)] || {})[type] : type;
++    return key ? drawableOfKey(3, key) : -1;
++}
++
++/** Put on arms `d` (a top's, or picked in its band); a glove worn stays on, in the new arms' type. */
++function setArmsKeepingGlove(d, tex) {
++    const arms = appearance.components['3'];
++    const was = armsInfo(arms.drawable), now = armsInfo(d);
++    if (was && was.glove && was.style != null && now && now.type) {
++        const gd = armsOf(now.type, was.style);
++        if (gd >= 0) { arms.drawable = gd; return; }   // same glove, its colour kept
++    }
++    arms.drawable = d;
++    arms.texture = tex || 0;
++}
++
++/** The Gloves tab's cards: the bare arms of the type worn (None), then each glove made for it. */
++function gloveChoices() {
++    const g = glovesData();
++    if (!g) return null;
++    const cur = appearance.components['3'].drawable;
++    const info = armsInfo(cur);
++    if (!info || !info.type) return { ids: [cur], type: null, bare: -1 };   // arms of one piece: nothing else fits
++    const bare = drawableOfKey(3, info.type);
++    const ids = bare >= 0 ? [bare] : [];
++    Object.keys(g.styles || {}).sort((a, b) => a - b).forEach(s => {
++        const k = g.styles[s][info.type];
++        const d = k ? drawableOfKey(3, k) : -1;
++        if (d >= 0 && !ids.includes(d)) ids.push(d);
++    });
++    if (!ids.includes(cur)) ids.unshift(cur);
++    return { ids, type: info.type, bare };
++}
++
++/** In the top's band when GTA gives the top no arms: the arm types to pick by hand (gloves kept). */
++function armsRowHtml() {
++    const g = glovesData();
++    if (!g || !g.types) return '';
++    const fit = topFit(appearance.components['11'].drawable);
++    if (fit && fit.arms) return '';
++    const cur = armsInfo(appearance.components['3'].drawable);
++    const curType = cur && cur.type;
++    let html = `<div class="cr-texrow cr-combo-row">`;
++    Object.keys(g.types).sort().forEach(k => {
++        const d = drawableOfKey(3, k);
++        if (d < 0) return;
++        const on = k === curType;
++        const src = iconOf('component', 3, d, 0);
++        html += `<button class="cr-tex${src ? ' cr-tex-pic' : ''}${on ? ' selected' : ''}" data-action="armsType" data-value="${d}"`
++            + ` aria-label="Arms ${d}" aria-pressed="${on}">${iconImg(src)}<span class="cr-tex-num">${d}</span></button>`;
++    });
++    return secHtml('arms', 'Arms', 'The ones that fit without gaps or clipping', html + '</div>');
++}
++
++// ---- D11 PATCH creator-wardrobe: versions and search ----
++
++/** In the top's band: its other versions in the same colour (open/closed, hood up/down...), from the shop. */
++function versionsHtml() {
++    const top = appearance.components['11'];
++    const fit = topFit(top.drawable);
++    const alt = fit && fit.alt && fit.alt[String(top.texture)];
++    if (!alt || !alt.length) return '';
++    const list = [[itemKey('component', 11, top.drawable), top.texture], ...alt];
++    let html = `<div class="cr-texrow cr-combo-row">`;
++    for (const [key, tex] of list) {
++        const d = drawableOfKey(11, key);
++        if (d < 0) continue;
++        const on = d === top.drawable;
++        const src = iconOf('component', 11, d, tex);
++        const name = escapeHtml(itemNameOf('component', 11, d, tex) || `Blusa ${d}`);
++        html += `<button class="cr-tex${src ? ' cr-tex-pic' : ''}${on ? ' selected' : ''}" data-action="topVersion"`
++            + ` data-value="${d}" data-tex="${tex}" title="${name}" aria-label="${name}" aria-pressed="${on}">`
++            + `${iconImg(src)}<span class="cr-tex-num">${d}</span></button>`;
++    }
++    return secHtml('versions', 'Versions', 'The same piece, another way', html + '</div>');
++}
++
++/** The game's name of any item (itemName is the active category's). */
++function itemNameOf(kind, slot, drawable, texture) {
++    const icons = maxVariations.icons;
++    if (!editorNames || !icons) return '';
++    const names = kind === 'prop' ? (icons.props || {})[String(slot)] : (icons.components || {})[String(slot)];
++    const key = clothingPictureName(icons.gender, kind, slot, names && names[drawable], texture);
++    const n = key && editorNames[key];
++    return typeof n === 'string' ? n : '';
++}
++
++function onTopVersionClick(el) {
++    const top = appearance.components['11'];
++    top.drawable = Number(el.dataset.value);
++    top.texture = Number(el.dataset.tex) || 0;
++    fitTop();
++    dressAgain();
++    schedulePreview();
++    renderGrid();
++    renderOptions();
++}
++
++// Search: the cards whose name (the game's, English), collection or number has every word typed. Common
++// Portuguese words are looked up in English too, so "jaqueta preta" finds "Black ... Jacket".
++let searchQuery = '';
++const SEARCH_WORDS = {
++    jaqueta: ['jacket', 'parka', 'coat', 'bomber'], casaco: ['coat', 'jacket', 'parka'], camisa: ['shirt'],
++    camiseta: ['t-shirt', 'tee', 'shirt'], regata: ['sleeveless', 'tank', 'vest'], moletom: ['hoodie', 'sweater', 'sweat'],
++    capuz: ['hood'], blusa: ['top', 'sweater', 'blouse', 'shirt'], sueter: ['sweater'], terno: ['suit'],
++    colete: ['vest', 'gilet'], polo: ['polo'], calca: ['pants', 'jeans', 'trousers', 'chinos', 'joggers'],
++    bermuda: ['shorts'], short: ['shorts'], saia: ['skirt'], vestido: ['dress'], tenis: ['sneakers', 'trainers', 'shoes'],
++    bota: ['boots'], botas: ['boots'], sapato: ['shoes', 'loafers', 'oxfords'], sandalia: ['sandals', 'flip'],
++    luva: ['gloves'], luvas: ['gloves'], chapeu: ['hat'], bone: ['cap'], gorro: ['beanie'], capacete: ['helmet'],
++    oculos: ['glasses', 'shades', 'sunglasses'], mascara: ['mask'], relogio: ['watch'], pulseira: ['bracelet', 'bangle'],
++    brinco: ['earring', 'earrings', 'stud'], corrente: ['chain', 'necklace'], colar: ['necklace', 'chain'],
++    gravata: ['tie'], mochila: ['backpack', 'bag'], bolsa: ['bag', 'purse'], couro: ['leather'], jeans: ['denim', 'jeans'],
++    aberto: ['open'], aberta: ['open'], fechado: ['closed'], fechada: ['closed'], longa: ['long'], curta: ['short'],
++    xadrez: ['plaid', 'check', 'tartan'], listrado: ['striped', 'stripe'], camuflado: ['camo', 'camouflage'],
++    preto: ['black'], preta: ['black'], branco: ['white'], branca: ['white'], azul: ['blue', 'navy'],
++    vermelho: ['red'], vermelha: ['red'], verde: ['green', 'olive'], amarelo: ['yellow'], amarela: ['yellow'],
++    rosa: ['pink'], roxo: ['purple'], roxa: ['purple'], cinza: ['gray', 'grey'], marrom: ['brown'], laranja: ['orange'],
++    bege: ['beige', 'tan'], dourado: ['gold'], prata: ['silver'],
++};
++
++function fold(t) { return String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase(); }
++
++/** Does card `c` have every typed word (its name, number or collection)? */
++function cardMatches(c, words) {
++    const hay = fold(`${c.name || ''} ${c.label || ''} ${c.value} ${c.coll || ''}`);
++    return words.every(w => hay.includes(w) || (SEARCH_WORDS[w] || []).some(e => hay.includes(e)));
++}
++
++/** Where cards have names to search: clothing, accessories, hair and tattoos. */
++function searchable(cat) { return !!cat && ['component', 'prop', 'hair', 'tattoos'].includes(cat.kind); }
++
++function markSearch() {
++    const box = $('cr-search'), input = $('cr-search-input');
++    if (!box || !input) return;
++    box.hidden = !searchable(activeCategory);
++    if (input.value !== searchQuery) input.value = searchQuery;
++}
++
++(function bindSearch() {
++    const input = $('cr-search-input');
++    if (!input) return;
++    let t = null;
++    input.addEventListener('input', () => {
++        clearTimeout(t);
++        t = setTimeout(() => { searchQuery = input.value; renderGrid(); }, 140);
++    });
++})();
++
++function onArmsTypeClick(el) {
++    setArmsKeepingGlove(Number(el.dataset.value), 0);
++    dressAgain();
++    schedulePreview();
++    renderOptions();
++}
++
+ const ONLY_PICTURED = new Set(['apparel', 'props']);   // the groups that do this: Apparel and Accessories
+ let pictureSets = null;                       // per slot, collection → Set of item numbers; per open
+ let openedWith = { components: {}, props: {} };   // slot → the drawable the editor opened with
+@@ -712,7 +1184,45 @@
+ }
+ 
+ /** An outfit's picture: its top's, as the cards and the band show it. */
++// ---- D11 PATCH creator-photostudio: the outfit's own photo (d11_photostudio) ----
++// A saved outfit can have a photo of the character wearing it, taken in d11_photostudio's studio ("Outfit photo"
++// in the outfit's band). Its card and band show it instead of the top's picture. Without that resource nothing
++// changes: the ask fails and the button never shows.
++const STUDIO = 'd11_photostudio';
++const outfitPhotos = {};          // [outfit id] = webp data URL
++let studioUp = false;             // d11_photostudio answered
++
++function studioPost(name, data) {
++    return fetch(`https://${STUDIO}/${name}`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify(data || {}) }).then(r => r.json());
++}
++
++/** The photos of this body's outfits, asked once per open (and again after a photo is taken). */
++function loadOutfitPhotos() {
++    const ids = outfitsHere().map(o => o.id);
++    studioPost('photos', { ids }).then(d => {
++        studioUp = true;
++        Object.entries((d && d.photos) || {}).forEach(([id, url]) => { outfitPhotos[Number(id)] = url; });
++        if (creatorOpen && activeCategory && activeCategory.kind === 'outfits') { renderGrid(); renderOptions(); }
++    }).catch(() => { studioUp = false; });
++}
++
++/** The studio, for the outfit worn: the creator hides until it closes, then shows the photo taken (if any). */
++function openPhotoStudio(id) {
++    const o = outfits.find(x => x.id === id);
++    if (!o || !studioUp) return;
++    const root = document.getElementById('creator');
++    root.classList.add('cr-photo-mode');
++    studioPost('open', { id, name: o.name }).catch(() => ({})).then(d => {
++        root.classList.remove('cr-photo-mode');
++        if (d && typeof d.photo === 'string') outfitPhotos[id] = d.photo;
++        requestAnimationFrame(reportStage);   // the studio centred the character: put it back beside the panels
++        if (activeCategory && activeCategory.kind === 'outfits') { renderGrid(); renderOptions(); }
++    });
++}
++
+ function outfitIcon(o) {
++    if (o && o.id != null && outfitPhotos[o.id]) return outfitPhotos[o.id];   // D11 PATCH creator-photostudio
+     const top = o.components['11'];
+     return top ? iconOf('component', 11, top.drawable, top.texture) : null;
+ }
+@@ -769,6 +1279,9 @@
+     if (worn) {
+         body += `<div class="cr-outfit-row">${box(worn.name, worn.name)}`
+             + `<button class="cr-obtn" data-action="outfitRename" data-value="${worn.id}"${wait}>Rename</button></div>`
++            // D11 PATCH creator-photostudio: a photo of the character in this outfit.
++            + (studioUp ? `<div class="cr-outfit-row"><button class="cr-obtn cr-obtn-primary" data-action="outfitPhoto"`
++                + ` data-value="${worn.id}"${wait}>${outfitPhotos[worn.id] ? 'Retake the outfit photo' : 'Outfit photo'}</button></div>` : '')
+             + `<div class="cr-outfit-row"><button class="cr-obtn cr-obtn-quiet" id="cr-outfit-delete" data-action="outfitDelete"`
+             + ` data-value="${worn.id}"${wait}>Delete outfit</button></div>`;
+     } else {
+@@ -784,7 +1297,7 @@
+     }
+     if (outfitWhy) body += `<div class="cr-opt-hint cr-opt-warn">${escapeHtml(outfitWhy)}</div>`;
+     setOptions(worn ? escapeHtml(worn.name) : 'New outfit', body, {
+-        src: outfitIcon(outfitOfAppearance()), glyph: 'outfit',
++        src: (worn && outfitPhotos[worn.id]) || outfitIcon(outfitOfAppearance()), glyph: 'outfit',   // D11 PATCH creator-photostudio
+         sub: worn ? 'You have this outfit on' : last ? `${escapeHtml(last.name)}, changed` : 'What you have on is not saved',
+         meta: `${outfits.length} of ${outfitMax} saved`,
+     });
+@@ -873,8 +1386,10 @@
+             aria-pressed="${on}">${CLUSTER_LABELS[key] || key}</button>`;
+     }).join('');
+ 
++    // D11 PATCH creator-layout: a column of icons, each with its word under it.
+     $('cr-rail').innerHTML = shownCats.filter(cat => cat.cluster === activeCluster).map(cat =>
+-        `<button class="cr-tab" data-action="category" data-cat="${cat.id}">${cat.label}</button>`).join('');
++        `<button class="cr-tab" data-action="category" data-cat="${cat.id}" title="${cat.label}" aria-label="${cat.label}">`
++        + `<span class="cr-tab-ico">${GLYPHS[cat.glyph] || ''}</span><span class="cr-tab-word">${cat.label}</span></button>`).join('');
+     markActiveRail();
+ }
+ 
+@@ -902,7 +1417,7 @@
+ 
+ function subtabsFor(cat) {
+     if (cat.kind === 'heritage') {
+-        return [{ label: 'Mother' }, { label: 'Father' }, { label: 'Grandparent' }];
++        return [{ label: 'Mother' }, { label: 'Father' }, { label: 'Grandparent' }, { label: 'Skin' }];   // D11 PATCH creator-skin
+     }
+     if (cat.kind === 'overlays' && cat.overlays.length > 1) return cat.overlays;
+     if (cat.kind === 'hair' && fadeList().length) return [{ label: 'Hairstyle' }, { label: 'Fade' }];   // HAIR_FADE_TAB
+@@ -917,6 +1432,10 @@
+     activeFeatureGroup = null;
+     texExpanded = false;
+     tattooFull = false;
++    heritageSex = HERITAGE_SEX_DEFAULT[0];   // D11 PATCH creator-faces
++    searchQuery = '';                        // D11 PATCH creator-wardrobe
++    activePTab = 0;                          // D11 PATCH creator-layout
++    document.getElementById('creator').dataset.kind = cat.kind;   // D11 PATCH creator-photostudio: the theme styles Outfits
+ 
+     // Keep the rail's group card in step, whether the category was picked from
+     // the list or jumped to programmatically (the creator opens on Heritage).
+@@ -937,8 +1456,11 @@
+         if (turn) shot.yaw = cat.yaw;
+         nuiCallback('switchCamera', shot);
+     }
++    markCamKeys();   // D11 PATCH creator-faces
+ 
+     renderSubtabs();
++    markSearch();   // D11 PATCH creator-wardrobe
++    markSection();  // D11 PATCH creator-layout
+     renderGrid();
+     renderOptions();
+ }
+@@ -951,12 +1473,93 @@
+     bar.innerHTML = tabs.map((t, i) =>
+         `<button class="cr-subtab${i === activeSubtab ? ' active' : ''}" data-action="subtab" data-idx="${i}"`
+         + ` aria-pressed="${i === activeSubtab}">${t.label}</button>`
+-    ).join('');
++    ).join('')
++        // D11 PATCH creator-faces: which faces the parent grid shows, women's, men's or every one.
++        + (activeCategory.kind === 'heritage' && activeSubtab < SKIN_TAB   // D11 PATCH creator-skin: no faces filter on Pele
++            ? '<span class="cr-subtab-sep" aria-hidden="true"></span>' + HERITAGE_SEX.map(x =>
++                `<button class="cr-subtab cr-sexchip${x.id === heritageSex ? ' active' : ''}" data-action="heritageSex"`
++                + ` data-sex="${x.id}" aria-pressed="${x.id === heritageSex}">${x.label}</button>`).join('')
++            : '');
++}
++
++// ---- D11 PATCH creator-faces: the face filter, the camera keys and the hidden panel ----
++
++// D11 PATCH creator-skin: Heritage's fourth tab picks the skin apart from the face.
++const SKIN_TAB = 3;
++function luma(hex) {
++    const n = parseInt(String(hex).slice(1), 16);
++    return 0.299 * (n >> 16 & 255) + 0.587 * (n >> 8 & 255) + 0.114 * (n & 255);
++}
++
++function selectHeritageSex(sex) {
++    if (!HERITAGE_SEX.some(x => x.id === sex) || sex === heritageSex) return;
++    heritageSex = sex;
++    renderSubtabs();
++    renderGrid();
++}
++
++/** Jump the camera to a framing (CAM_KEYS), as a category switch does. */
++function setCamPreset(preset) {
++    if (!creatorOpen || !preset) return;
++    currentCamPreset = preset;
++    nuiCallback('switchCamera', { preset });
++    markCamKeys();
++}
++
++/** Turn the camera round the ped by `deg` (Q/E), or face it (R). */
++function turnCam(deg) { if (creatorOpen) nuiCallback('switchCamera', { turn: deg }); }
++function faceCam() { if (creatorOpen) nuiCallback('switchCamera', { yaw: 180 }); }
++
++function markCamKeys() {
++    document.querySelectorAll('#cr-key-hints [data-cam]').forEach(el => {
++        el.classList.toggle('on', el.dataset.cam === currentCamPreset);
++    });
+ }
+ 
++function setUiHidden(on) {
++    uiHidden = !!on;
++    const root = document.getElementById('creator');
++    if (root) root.classList.toggle('cr-ui-hidden', uiHidden);
++    const word = document.getElementById('cr-hide-hint');
++    if (word) word.textContent = uiHidden ? 'Show' : 'Hide';
++}
++
++/** A key the creator answers outside a text box: 1-4 framing, Q/E groups, Z/C turn, R front, H panels. True if used. */
++function creatorHotkey(e) {
++    if (e.ctrlKey || e.altKey || e.metaKey) return false;
++    const k = String(e.key || '').toLowerCase();
++    const cam = CAM_KEYS.find(c => c.key === k);
++    if (cam) { if (!e.repeat) setCamPreset(cam.preset); return true; }
++    if (k === 'q' || k === 'e') { if (!e.repeat) stepCluster(k === 'q' ? -1 : 1); return true; }   // D11 PATCH creator-layout
++    if (k === 'z') { turnCam(CAM_TURN_STEP); return true; }
++    if (k === 'c') { turnCam(-CAM_TURN_STEP); return true; }
++    if (k === 'r') { if (!e.repeat) faceCam(); return true; }
++    if (k === 'h') { if (!e.repeat) setUiHidden(!uiHidden); return true; }
++    return false;
++}
++
++(function buildKeyLegend() {
++    const box = document.getElementById('cr-key-hints');
++    if (!box) return;
++    const esc = document.getElementById('cr-esc-hint');
++    const escItem = esc && esc.closest('.cr-hint');
++    // D11 PATCH creator-layout: the four framings as one group of keys ("Enquadrar"), each its own button.
++    box.innerHTML = `<span class="cr-hint cr-keygroup">` + CAM_KEYS.map(c =>
++        `<button type="button" class="cr-keybtn cr-keyonly" data-action="camKey" data-cam="${c.preset}" title="${c.label}"`
++        + ` aria-label="${c.label}"><span class="cr-key">${c.key}</span></button>`).join('') + ` Enquadrar</span>`
++        + `<button type="button" class="cr-hint cr-keybtn" data-action="camTurn" data-turn="${CAM_TURN_STEP}">`
++        + `<span class="cr-key">Z</span><span class="cr-key">C</span> Turn</button>`
++        + `<button type="button" class="cr-hint cr-keybtn" data-action="camFront"><span class="cr-key">R</span> Front</button>`
++        + `<button type="button" class="cr-hint cr-keybtn" data-action="uiHide"><span class="cr-key">H</span>`
++        + ` <span id="cr-hide-hint">Hide</span></button>`
++        + `<span class="cr-hint"><span class="cr-key">Q</span><span class="cr-key">E</span> Tabs</span>`;
++    if (escItem) box.appendChild(escItem);   // Esc ends the keys' line
++})();
++
+ function selectSubtab(idx) {
+     activeSubtab = idx;
+     texExpanded = false;
++    if (activeCategory.kind === 'heritage') heritageSex = HERITAGE_SEX_DEFAULT[idx] || 'all';   // D11 PATCH creator-faces
+     // A fade is on the sides and back of the head: the camera turns to the side for them.
+     if (activeCategory.kind === 'hair' && idx === HAIR_FADE_TAB) nuiCallback('switchCamera', { yaw: FADE_YAW });
+     renderSubtabs();
+@@ -984,7 +1587,7 @@
+     if (c.name) return escapeHtml(c.name);
+     if (!/^\d+$/.test(c.label)) return c.label;
+     const cat = activeCategory;
+-    const noun = cat.kind === 'heritage' ? ['Mother', 'Father', 'Grandparent'][activeSubtab]
++    const noun = cat.kind === 'heritage' ? ['Mother', 'Father', 'Grandparent', 'Tone'][activeSubtab]
+         : cat.kind === 'overlays' ? cat.overlays[activeSubtab].label
+         : cat.kind === 'hair' && activeSubtab === HAIR_FADE_TAB ? 'Fade'
+         : cat.kind === 'tattoos' ? `${cat.label} tattoo`
+@@ -1017,18 +1620,29 @@
+         : `<span class="cr-card-art">${GLYPHS[c.glyph] || GLYPHS.face}</span>`;
+     return `<button type="button" class="cr-card${sel}${c.name ? ' named' : ''}" data-action="card" data-value="${c.value}"
+         aria-pressed="${!!c.selected}" aria-label="${cardName(c)}">
+-        ${art}${iconImg(c.icon)}${cardLabel(c)}</button>`;
++        ${art}${iconImg(c.icon)}${cardLabel(c)}${c.price ? `<span class="cr-card-price">$${c.price.toLocaleString('en-US')}</span>` : ''}</button>`;
+ }
+ 
+ function buildGridCards() {
+     const cat = activeCategory;
+     const cards = [];
+ 
+-    if (cat.kind === 'heritage') {
++    if (cat.kind === 'heritage' && activeSubtab === SKIN_TAB) {
++        // D11 PATCH creator-skin: "Dos pais" (the blend, as before), then every tone, lightest first.
++        const cur = appearance.headBlend.skin;
++        const picked = typeof cur === 'number' && cur >= 0;
++        cards.push({ value: -1, label: 'Parents', glyph: 'heritage', selected: !picked, name: 'Parents' });
++        SKIN_TONES.map((hex, i) => ({ hex, i, l: luma(hex) })).sort((a, b) => b.l - a.l).forEach((t, n) => {
++            cards.push({ value: t.i, label: String(n + 1), swatch: t.hex, selected: picked && cur === t.i, name: `Tom ${n + 1}` });
++        });
++    } else if (cat.kind === 'heritage') {
+         const key = ['mom', 'dad', 'grandparent'][activeSubtab];
+         const max = (activeSubtab === 1) ? 44 : 45;   // dads run 0-44, moms/grandparents 0-45
+         const cur = appearance.headBlend[key];
+-        for (let i = 0; i <= max; i++) {
++        // D11 PATCH creator-faces: one side's faces (HEADS), or every one in GTA's order.
++        const ids = heritageSex === 'all' ? Array.from({ length: max + 1 }, (_, i) => i)
++            : HEADS[heritageSex].filter(i => i <= max);
++        for (const i of ids) {
+             cards.push({ value: i, label: String(i), glyph: 'face', selected: cur === i, icon: headIconOf(i),
+                          tex: 0, name: itemName(i, 0) });
+         }
+@@ -1068,8 +1682,16 @@
+         const c = appearance.components[String(cat.comp)];
+         const max = maxDrawableFor(cat);
+         const only = ONLY_PICTURED.has(cat.cluster), opened = openedWith.components[String(cat.comp)];
+-        for (let i = 0; i < max; i++) {
++        // D11 PATCH creator-wardrobe: the Gloves tab shows the gloves of the arms worn, None first.
++        const gl = cat.id === 'arms' ? gloveChoices() : null;
++        for (const i of (gl ? gl.ids : Array.from({ length: max }, (_, n) => n))) {
++            if (gl && i === gl.bare) {
++                cards.push({ value: i, label: 'None', glyph: 'none', selected: c.drawable === i,
++                             icon: iconOf('component', 3, i, 0), tex: 0, name: 'No gloves' });
++                continue;
++            }
+             if (only && i !== c.drawable && i !== opened && !hasPicture('component', cat.comp, i)) continue;
++            if (i !== c.drawable && i !== opened && invisibleItem('component', cat.comp, i)) continue;   // D11 PATCH creator-wardrobe
+             const tex = c.drawable === i ? c.texture : 0;
+             cards.push({ value: i, label: String(i), glyph: cat.glyph, selected: c.drawable === i,
+                          icon: iconOf('component', cat.comp, i, tex), tex, name: itemName(i, tex) });
+@@ -1081,6 +1703,7 @@
+         const only = ONLY_PICTURED.has(cat.cluster), opened = openedWith.props[String(cat.prop)];
+         for (let i = 0; i < max; i++) {
+             if (only && i !== p.drawable && i !== opened && !hasPicture('prop', cat.prop, i)) continue;
++            if (i !== p.drawable && i !== opened && invisibleItem('prop', cat.prop, i)) continue;   // D11 PATCH creator-wardrobe
+             const tex = p.drawable === i ? p.texture : 0;
+             cards.push({ value: i, label: String(i), glyph: cat.glyph, selected: p.drawable === i,
+                          icon: iconOf('prop', cat.prop, i, tex), tex, name: itemName(i, tex) });
+@@ -1106,9 +1729,25 @@
+     return cards;
+ }
+ 
++let gridCtx = '', gridSel = null;   // D11 PATCH creator-combos: the list drawn last, and its card picked
++
+ function renderGrid() {
+     const grid = $('cr-grid');
+     gridCards = buildGridCards();
++    // D11 PATCH creator-wardrobe: the search's words; the card worn always stays.
++    const words = fold(searchQuery).split(/\s+/).filter(Boolean);
++    if (words.length && searchable(activeCategory)) {
++        gridCards = gridCards.filter(c => c.selected || cardMatches(c, words));
++        if (!gridCards.length || gridCards.every(c => c.selected)) gridCards.push({ value: -9999, label: '', glyph: 'none', name: 'Nothing found' });
++    }
++    // D11 PATCH creator-layout: in a store each card says what it costs (the one worn is already paid for).
++    const unit = unitPrice(activeCategory);
++    if (unit) gridCards.forEach(c => { if (c.value >= 0 && !c.selected) c.price = unit; });
++    // D11 PATCH creator-combos: the same list drawn again (a version picked, the store's prices, a cart line
++    // undone, the pictures that came late) stays where it was scrolled; only a new list goes to the selection.
++    const ctx = [activeCategory && activeCategory.id, activeSubtab, heritageSex, searchQuery].join('|');
++    const again = gridCtx === ctx, keepTop = grid.scrollTop, keepN = gridRendered;
++    gridCtx = ctx;
+     gridRendered = 0;
+     grid.innerHTML = '';
+     grid.scrollTop = 0;
+@@ -1118,7 +1757,15 @@
+     // five to a row, card 15 is already below the fold.
+     const idx = gridCards.findIndex(c => c.selected);
+     while (idx >= 0 && gridRendered <= idx && gridRendered < gridCards.length) appendGridChunk();
+-    revealSelectedCard(true);
++    if (again) {
++        while (gridRendered < keepN && gridRendered < gridCards.length) appendGridChunk();
++        grid.scrollTop = keepTop;
++        const sel = idx >= 0 ? gridCards[idx].value : null;
++        if (sel !== gridSel) revealSelectedCard(false);   // a new pick from the right panel: just into view
++    } else {
++        revealSelectedCard(true);
++    }
++    gridSel = idx >= 0 ? gridCards[idx].value : null;
+     reportGridHitTest();
+ }
+ 
+@@ -1235,9 +1882,16 @@
+ 
+ function onCardClick(el) {
+     const value = Number(el.dataset.value);
++    if (value === -9999) return;   // D11 PATCH creator-wardrobe: the search's "nothing found" card
+     const cat = activeCategory;
+ 
+-    if (cat.kind === 'heritage') {
++    if (cat.kind === 'heritage' && activeSubtab === SKIN_TAB) {
++        // D11 PATCH creator-skin: a tone for any face; -1 back to the parents' blend.
++        if (value >= 0) appearance.headBlend.skin = value; else delete appearance.headBlend.skin;
++        markSelectedCard(value);
++        schedulePreview();
++        renderOptions();
++    } else if (cat.kind === 'heritage') {
+         const key = ['mom', 'dad', 'grandparent'][activeSubtab];
+         appearance.headBlend[key] = value;
+         markSelectedCard(value);
+@@ -1284,6 +1938,7 @@
+         c.drawable = value;
+         c.texture = 0;                // texture counts differ per drawable
+         if (was !== value) { setCardIcon(was, 0); texExpanded = false; }
++        if (cat.comp === 11 && was !== value) fitTop();   // D11 PATCH creator-wardrobe: its undershirt and arms
+         markSelectedCard(value);
+         dressAgain();                 // undressed, it would not show
+         schedulePreview();
+@@ -1327,6 +1982,7 @@
+  */
+ function setOptions(title, bodyHtml, hero, side) {
+     const band = $('cr-options');
++    document.getElementById('creator').classList.toggle('band-open', !!(bodyHtml || hero));   // D11 PATCH creator-layout
+     if (!bodyHtml && !hero) {
+         band.classList.remove('open');
+         band.innerHTML = '';
+@@ -1336,6 +1992,7 @@
+     const pic = hero
+         ? `<div class="cr-hero">${iconImg(hero.src)}<span class="cr-hero-art">${GLYPHS[hero.glyph] || ''}</span></div>`
+         : '';
++    const kept = bandScrolls(band);   // D11 PATCH creator-combos
+     if (side) {
+         band.innerHTML = `<div class="cr-band-head"><div class="cr-band-title">${title}</div>`
+             + (hero && hero.sub ? `<div class="cr-band-sub">${hero.sub}</div>` : '')
+@@ -1351,6 +2008,7 @@
+     }
+     band.classList.toggle('cr-band-sided', !!side);
+     band.classList.add('open');
++    restoreBandScrolls(band, kept);   // D11 PATCH creator-combos
+ 
+     // When the controls are more than the band holds they scroll under the heading: the picked
+     // colour is scrolled to, and the cut edge fades while there is more below it.
+@@ -1362,6 +2020,34 @@
+     revealSelectedCard(false);       // the band's height moved the grid: keep the picked card in view
+ }
+ 
++// D11 PATCH creator-combos: the Personalização panel is drawn again on every pick (an undershirt, the arms, a
++// version): its lists (the band's body, a long row of undershirts) keep where they were scrolled while the
++// same category and tab show. A list is known by its section and its place in it.
++function bandScrollKey(el) {
++    const sec = el.closest('[data-sec]');
++    const cls = el.classList[0] || '';
++    const peers = (sec || el.closest('#cr-options')).querySelectorAll('.' + cls);
++    return (sec ? sec.dataset.sec : '') + '|' + cls + '|' + Array.prototype.indexOf.call(peers, el);
++}
++
++function bandScrolls(band) {
++    const ctx = [activeCategory && activeCategory.id, activeSubtab, activePTab].join('|');
++    const out = { ctx, at: {} };
++    if (band.dataset.ctx !== ctx) return out;
++    band.querySelectorAll('.cr-band-body, .cr-texrow, .cr-swatches').forEach(el => {
++        if (el.scrollTop > 0 || el.scrollLeft > 0) out.at[bandScrollKey(el)] = [el.scrollTop, el.scrollLeft];
++    });
++    return out;
++}
++
++function restoreBandScrolls(band, kept) {
++    band.dataset.ctx = kept.ctx;
++    band.querySelectorAll('.cr-band-body, .cr-texrow, .cr-swatches').forEach(el => {
++        const v = kept.at[bandScrollKey(el)];
++        if (v) { el.scrollTop = v[0]; el.scrollLeft = v[1]; }
++    });
++}
++
+ function markBandScroll(body) {
+     body.classList.toggle('cr-scrolls', body.scrollTop + body.clientHeight < body.scrollHeight - 2);
+ }
+@@ -1426,24 +2112,29 @@
+ const CHEVRON = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor"'
+     + ' stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+ 
+-function texRowHtml(count, current, iconFor) {
++function texRowHtml(count, current, iconFor, texs, action = 'tex', fold = true) {
+     // Two rows of pictures, then "+18 more" (option B): an item can have 26 colours, and all of them
+     // at once would push the grid off the screen. Shown in full on a press ("Fewer" puts them back),
+     // or when the colour worn is past the first rows (it must be on screen to be seen picked: no
+     // "Fewer" then either).
+-    const folds = !!iconFor && count > TEX_SHOWN + 1 && current < TEX_SHOWN;
+-    const limit = (folds && !texExpanded) ? TEX_SHOWN : count;
++    // D11 PATCH creator-wardrobe: `texs` is the colours to show (shownTextures: the broken ones left out),
++    // `action` the tile's data-action (the undershirt's colours are 'utex'), `fold` false shows them all.
++    const list = Array.isArray(texs) ? texs : Array.from({ length: count }, (_, i) => i);
++    const at = list.indexOf(current);
++    const folds = fold && !!iconFor && list.length > TEX_SHOWN + 1 && at < TEX_SHOWN;
++    const limit = (folds && !texExpanded) ? TEX_SHOWN : list.length;
+     let html = '<div class="cr-texrow">';
+-    for (let i = 0; i < limit; i++) {
++    for (let k = 0; k < limit; k++) {
++        const i = list[k];
+         const src = iconFor ? iconFor(i) : null;
+-        html += `<button class="cr-tex${src ? ' cr-tex-pic' : ''}${current === i ? ' selected' : ''}" data-action="tex" data-value="${i}"`
++        html += `<button class="cr-tex${src ? ' cr-tex-pic' : ''}${current === i ? ' selected' : ''}" data-action="${action}" data-value="${i}"`
+             + ` aria-label="Colour ${i}" aria-pressed="${current === i}">${iconImg(src)}<span class="cr-tex-num">${i}</span></button>`;
+     }
+     if (folds) {
+         html += texExpanded
+-            ? `<button class="cr-tex cr-tex-more" data-action="texmore" aria-expanded="true">Fewer${CHEVRON}</button>`
++            ? `<button class="cr-tex cr-tex-more" data-action="texmore" aria-expanded="true">Less${CHEVRON}</button>`
+             : `<button class="cr-tex cr-tex-more" data-action="texmore" aria-expanded="false"`
+-              + ` aria-label="Show ${count - limit} more colours">+${count - limit} more${CHEVRON}</button>`;
++              + ` aria-label="${list.length - limit} more colours">+${list.length - limit} colours${CHEVRON}</button>`;
+     }
+     return html + '</div>';
+ }
+@@ -1461,6 +2152,18 @@
+     const gen = ++optionsGen;
+     const cat = activeCategory;
+ 
++    if (cat.kind === 'heritage' && activeSubtab === SKIN_TAB) {
++        // D11 PATCH creator-skin
++        const cur = appearance.headBlend.skin;
++        const picked = typeof cur === 'number' && cur >= 0;
++        setOptions(picked ? 'Picked skin' : 'Parents\' skin',
++            `<div class="cr-opt-hint">${picked
++                ? 'This tone works on any face, without changing its shape. "Parents" blends the mother\'s and father\'s skin again.'
++                : 'The skin blends the mother\'s and the father\'s ("Skin Mix" on the Mother and Father tabs). Pick a tone to put any colour on any face.'}</div>`,
++            picked ? { src: headIconOf(cur), glyph: 'face', sub: `Face tone ${cur}` } : null);
++        return;
++    }
++
+     if (cat.kind === 'heritage') {
+         // The parent the sub-tab picks, face and number, beside the blend (which is the three's).
+         const hb = appearance.headBlend;
+@@ -1468,7 +2171,8 @@
+         setOptions(`${['Mother', 'Father', 'Grandparent'][activeSubtab]} ${parent}`,
+             `<div class="cr-opt-label"><span>Blend</span></div>`
+             + sliderHtml('blend', 'faceWeight', 'Face Mix', Math.round(hb.faceWeight * 100), 0, 100)
+-            + sliderHtml('blend', 'skinWeight', 'Skin Mix', Math.round(hb.skinWeight * 100), 0, 100)
++            + (typeof hb.skin === 'number' && hb.skin >= 0 ? ''   // D11 PATCH creator-skin: a picked skin does not blend
++                : sliderHtml('blend', 'skinWeight', 'Skin Mix', Math.round(hb.skinWeight * 100), 0, 100))
+             + sliderHtml('blend', 'thirdWeight', 'Grandparent Mix', Math.round(hb.thirdWeight * 100), 0, 100)
+             + `<div class="cr-opt-hint">Face and skin blend mother &rarr; father; the third slider mixes the grandparent in.</div>`,
+             { src: headIconOf(parent), glyph: 'face' });
+@@ -1540,7 +2244,8 @@
+             // One texture is no choice at all. Its small pictures sit at the end of the heading's line;
+             // the colours stand beside the big picture, Colour over Highlight, so the hairstyles below
+             // keep their rows.
+-            const tex = count > 1 ? texRowHtml(count, hair.texture, i => iconOf('component', 2, hair.style, i)) : '';
++            const htexs = shownTextures('component', 2, hair.style, count, hair.texture);   // D11 PATCH creator-wardrobe
++            const tex = htexs.length > 1 ? texRowHtml(count, hair.texture, i => iconOf('component', 2, hair.style, i), htexs) : '';
+             setOptions(`Hair ${hair.style}`, tex,
+                 { src: iconOf('component', 2, hair.style, hair.texture), glyph: 'hair',
+                   sub: collectionOf('component', 2, hair.style) },
+@@ -1598,10 +2303,31 @@
+             const kind = isProp ? 'prop' : 'component', id = isProp ? cat.prop : cat.comp;
+             // The item worn, big, with its colours. One colour is nothing to choose: the picture and
+             // its count only, no single dead tile.
+-            setOptions(`${cat.one || cat.label} ${slot.drawable}`,
+-                count > 1 ? texRowHtml(count, slot.texture, i => iconOf(kind, id, slot.drawable, i)) : '',
++            // D11 PATCH creator-wardrobe: only the colours that really exist; a top adds its Combinações.
++            const texs = shownTextures(kind, id, slot.drawable, count, slot.texture);
++            // D11 PATCH creator-layout: the colours in a folding section; a top's sections in tabs.
++            const colours = texs.length > 1 ? secHtml('tex', 'Colours', coloursText(texs.length),
++                texRowHtml(count, slot.texture, i => iconOf(kind, id, slot.drawable, i), texs)) : '';
++            const named = itemNameOf(kind, id, slot.drawable, slot.texture);
++            const draw = (extra) => setOptions(named ? escapeHtml(named) : `${cat.one || cat.label} ${slot.drawable}`,
++                colours + (extra || ''),
+                 { src: iconOf(kind, id, slot.drawable, slot.texture), glyph: cat.glyph,
+-                  sub: collectionOf(kind, id, slot.drawable), meta: count > 0 ? coloursText(count) : '' });
++                  sub: [collectionOf(kind, id, slot.drawable), `no. ${slot.drawable}`].filter(Boolean).join(' · '),
++                  meta: texs.length > 0 ? coloursText(texs.length) : '' });
++            if (!isProp && cat.comp === 11 && shownCats.every(c => c.id !== 'undershirt')) {
++                topCombosHtml().then(html => {
++                    if (gen !== optionsGen) return;
++                    setOptions(named ? escapeHtml(named) : `${cat.one || cat.label} ${slot.drawable}`,
++                        ptabsHtml([['Styles', colours + versionsHtml()], ['Undershirts', html], ['Arms', armsRowHtml()]]),
++                        { src: iconOf(kind, id, slot.drawable, slot.texture), glyph: cat.glyph,
++                          sub: [collectionOf(kind, id, slot.drawable), `no. ${slot.drawable}`].filter(Boolean).join(' · '),
++                          meta: texs.length > 0 ? coloursText(texs.length) : '' });
++                });
++            } else if (!isProp && cat.id === 'arms' && glovesData() && !(armsInfo(slot.drawable) || {}).type) {
++                draw(`<div class="cr-opt-hint">This top's arms are one piece with it: no gloves fit it.</div>`);
++            } else {
++                draw('');
++            }
+         });
+         return;
+     }
+@@ -1971,10 +2697,23 @@
+         ['texmore',  () => { texExpanded = !texExpanded; renderOptions(); }],
+         ['swatch',   el => onSwatchClick(el)],
+         ['undress',  () => toggleUndress()],
++        ['heritageSex', el => selectHeritageSex(el.dataset.sex)],                           // D11 PATCH creator-faces
++        ['under',    el => onUnderClick(el)],                                                // D11 PATCH creator-wardrobe
++        ['utex',     el => onUnderTexClick(el)],
++        ['armsType', el => onArmsTypeClick(el)],
++        ['topVersion', el => onTopVersionClick(el)],
++        ['secToggle',  el => onSecToggle(el)],                                               // D11 PATCH creator-layout
++        ['ptab',       el => { activePTab = Number(el.dataset.idx) || 0; renderOptions(); }],
++        ['clusterStep', el => stepCluster(Number(el.dataset.step) || 1)],
++        ['camKey',   el => setCamPreset(el.dataset.cam)],
++        ['camTurn',  el => turnCam(Number(el.dataset.turn) || CAM_TURN_STEP)],
++        ['camFront', () => faceCam()],
++        ['uiHide',   () => setUiHidden(!uiHidden)],
+         ['outfitSave',   () => saveOutfit()],
+         ['outfitUpdate', el => updateOutfit(Number(el.dataset.value))],
+         ['outfitRename', el => renameOutfit(Number(el.dataset.value))],
+         ['outfitDelete', el => deleteOutfit(el)],
++        ['outfitPhoto',  el => openPhotoStudio(Number(el.dataset.value))],                // D11 PATCH creator-photostudio
+         ['save',     () => saveAppearance()],
+         ['cancel',   () => attemptCancel()],
+         ['pay',      el => saveAppearance(el.dataset.method)],
+@@ -2248,6 +2987,7 @@
+     appearance = normalizeAppearance(d.appearance || {});
+     maxVariations = d.maxVariations || {};
+     pictureSets = null;
++    gridCtx = '';   // D11 PATCH creator-combos: a new open draws its lists afresh
+     // What the player came in wearing stays on offer, picture or not (hasPicture's "always kept").
+     openedWith = { components: {}, props: {} };
+     ['components', 'props'].forEach(group => Object.keys(appearance[group] || {}).forEach(slot => {
+@@ -2255,6 +2995,7 @@
+     }));
+     isNew = !!d.isNew;
+     outfits = normalizeOutfits(d.outfits);
++    loadOutfitPhotos();          // D11 PATCH creator-photostudio
+     outfitMax = Number(d.outfitMax) > 0 ? Number(d.outfitMax) : 20;
+     outfitLast = null;
+     outfitWhy = '';
+@@ -2274,6 +3015,9 @@
+         wallet: (s.wallet && typeof s.wallet === 'object') ? s.wallet : {} } : null;
+     shownCats = CATEGORIES.filter(cat => storeAllows(only, cat));
+     if (!shownCats.length) shownCats = CATEGORIES;
++    // D11 PATCH creator-wardrobe: with a Tops tab the undershirt is picked in its band (Combinações).
++    if (shownCats.some(cat => cat.id === 'tops')) shownCats = shownCats.filter(cat => cat.id !== 'undershirt');
++    loadWardrobe(bodyOfLook());
+     shownClusters = CLUSTER_ORDER.filter(key => shownCats.some(cat => cat.cluster === key));
+     markStorePrice();
+     creatorOpen = true;
+@@ -2285,12 +3029,15 @@
+     delete paletteCache.makeup;
+     disarmCancel();
+     undressed = false;           // every open starts dressed
++    setUiHidden(false);          // D11 PATCH creator-faces: and with the panels up
++    collapsedSecs.clear();       // D11 PATCH creator-layout: every section open again
+     cursor.hide();               // the circle comes back on the card worn, at the first push or press
+     buildUndress();
+     loadNames();                 // the first open only: kept after that
+     buildRail();
+     document.getElementById('creator').classList.add('open');
+     selectCategory(shownCats[0].id);
++    markWallet();            // D11 PATCH creator-layout
+     // Laid out first (display: block a frame ago), so the stage's box is real.
+     requestAnimationFrame(() => requestAnimationFrame(reportStage));
+ });
+@@ -2351,6 +3098,12 @@
+     name: 'creator', priority: 0,
+     isOpen: () => creatorOpen && !padKeyboardOpen(),
+     onKey: (e) => {
++        if (e.target && e.target.id === 'cr-search-input') {   // D11 PATCH creator-wardrobe
++            if (e.key === 'Escape') {
++                if (e.target.value) { e.target.value = ''; searchQuery = ''; renderGrid(); } else e.target.blur();
++            } else if (e.key === 'Enter') e.target.blur();
++            return;
++        }
+         if (e.target && e.target.id === 'cr-outfit-name') {
+             if (e.key === 'Enter') {
+                 const btn = document.querySelector('#cr-options [data-action="outfitSave"], #cr-options [data-action="outfitRename"]');
+@@ -2360,7 +3113,15 @@
+             }
+             return;
+         }
+-        if (e.key === 'Escape') attemptCancel();
++        if (e.key === 'Escape') {
++            if (uiHidden) { setUiHidden(false); return; }   // D11 PATCH creator-faces: Esc brings the panels back first
++            attemptCancel();
++            return;
++        }
++        // D11 PATCH creator-faces: the camera keys, but never while typing.
++        const t = e.target;
++        if (t && (t.isContentEditable || t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && t.type !== 'range'))) return;
++        creatorHotkey(e);
+     },
+     onNav: ctlNav,
+     analog: true,
+diff -ru a/whip_core/server/events_misc.lua b/whip_core/server/events_misc.lua
+--- a/whip_core/server/events_misc.lua
++++ b/whip_core/server/events_misc.lua
+@@ -686,6 +686,8 @@
+             faceWeight = clampFloat(hb.faceWeight, 0.0, 1.0, 0.5),
+             skinWeight = clampFloat(hb.skinWeight, 0.0, 1.0, 0.5),
+             thirdWeight = clampFloat(hb.thirdWeight, 0.0, 1.0, 0.0),
++            -- D11 PATCH creator-skin: a skin picked for any face (a head number), absent for the parents' blend.
++            skin = (type(hb.skin) == 'number' and hb.skin >= 0) and clampInt(hb.skin, 0, 45, 0) or nil,
+         },
+         faceFeatures = {},
+         eyeColor = clampInt(appearance.eyeColor, 0, 31, 0),

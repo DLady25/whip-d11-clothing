@@ -42,11 +42,27 @@ end
 -- Opening the editor (the server checks the distance and builds what is unlocked and the prices)
 -- ============================================
 
+local opening = false   -- the countdown is running (pressing again does nothing)
+
 local function serve(i)
+    if opening then return end
     if IsPedInAnyVehicle(PlayerPedId(), true) then
         return exports.whip_core:Notify(L('Get out of the vehicle first', 'Saia do veículo primeiro'), 'error')
     end
-    TriggerServerEvent('d11_stores:open', i)
+    local delay = math.max(0, math.floor(tonumber(Config.OpenDelay) or 0))
+    if delay == 0 then return TriggerServerEvent('d11_stores:open', i) end
+    opening = true
+    exports.whip_core:Notify(L(('Opening in %d s: stand in the open, facing the room, where the camera can see you.'):format(delay),
+        ('Abrindo em %d s: fique num espaço livre, de frente para a loja, onde a câmera possa te ver.'):format(delay)), 'info')
+    SetTimeout(delay * 1000, function()
+        opening = false
+        local ped = PlayerPedId()
+        if IsEntityDead(ped) then return end
+        if IsPedInAnyVehicle(ped, true) then
+            return exports.whip_core:Notify(L('Get out of the vehicle first', 'Saia do veículo primeiro'), 'error')
+        end
+        TriggerServerEvent('d11_stores:open', i)   -- the server checks you are still at the counter
+    end)
 end
 
 local function failed(why)
